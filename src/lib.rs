@@ -2,6 +2,7 @@
 //! for the binary and its tests; it has no stable API.
 
 pub mod adapter;
+pub mod assets;
 pub mod changelog;
 pub mod changes;
 pub mod changeset;
@@ -16,4 +17,5 @@ pub mod manifest;
 pub mod output;
 pub mod plan;
 pub mod prerelease;
+pub mod release_commit;
 pub mod units;

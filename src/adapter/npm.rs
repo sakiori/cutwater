@@ -1,7 +1,7 @@
 //! The npm adapter.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use jsonc_parser::ParseOptions;
 use jsonc_parser::cst::CstRootNode;
@@ -14,8 +14,9 @@ use super::walk::{PNPM_MANIFESTS, npm_dirs, pnpm_dirs};
 use super::{
     AcceptsRequest, Adapter, AdapterError, DiscoverRequest, DiscoveredUnit, Discovery, Edge,
     EdgeKind, FileWrite, InspectRequest, Inspection, Location, LockfileRequest, Lockfiles,
-    PackageProblem, PrepareRequest, Prepared, Publication, Publications, PublishedRequest,
-    UnitVersion, WriteRequest, Writes, join, nearest_lockfiles, publication, run_tool,
+    PackageProblem, PrepareRequest, Prepared, Publication, Publications, PublishOutcome,
+    PublishRequest, Published, PublishedRequest, Tools, ToolsRequest, UnitRef, UnitVersion,
+    WriteRequest, Writes, join, nearest_lockfiles, publication, run_tool,
 };
 
 pub struct Npm;
@@ -197,6 +198,7 @@ impl Adapter for Npm {
                         reference: reference.to_string(),
                         range: Some(resolved.range),
                         follows: resolved.follows,
+                        published_first: false,
                         location: resolved.location,
                     });
                 }
@@ -287,37 +289,18 @@ impl Adapter for Npm {
         let root = &request.root;
         let mut units = Vec::new();
         for query in &request.queries {
-            let file = join(&query.unit.path, "package.json");
-            let manifest: Value = serde_json::from_str(&read(root, &file)?)
-                .map_err(|err| AdapterError::new(&file, err.to_string()))?;
-            let name = manifest
-                .get("name")
-                .and_then(Value::as_str)
-                .ok_or_else(|| AdapterError::new(&file, "has no `name` string"))?;
-            let registry = manifest
-                .pointer("/publishConfig/registry")
-                .and_then(Value::as_str);
+            let target = Target::of(root, &query.unit)?;
             let mut command = std::process::Command::new("npm");
             command
-                .args(["view", name, "versions", "--json"])
+                .args(["view", &target.name, "versions", "--json"])
+                .args(target.registry_args())
                 .current_dir(root);
-            if let Some(registry) = registry {
-                command.arg(format!("--registry={registry}"));
-                // npm takes a scoped package's registry from the scope's
-                // setting, which outranks `--registry`.
-                if let Some((scope, _)) = name.split_once('/').filter(|_| name.starts_with('@')) {
-                    command.arg(format!("--{scope}:registry={registry}"));
-                }
-            }
-            let output = run_tool(&mut command, "npm", &file, "asking the registry")?;
-            let registry = match registry {
-                Some(registry) => format!("the npm registry {registry}"),
-                None => "the npm registry the environment configures".to_string(),
-            };
+            let output = run_tool(&mut command, "npm", &target.file, "asking the registry")?;
+            let registry = target.describe();
             units.push(match npm_versions(&output) {
                 Ok(versions) => publication(&query.unit.name, &query.version, registry, &versions),
                 Err(problem) => Publication {
-                    problem: Some(format!("`npm view {name} versions`: {problem}")),
+                    problem: Some(format!("`npm view {} versions`: {problem}", target.name)),
                     ..publication(&query.unit.name, &query.version, registry, &[])
                 },
             });
@@ -347,31 +330,18 @@ impl Adapter for Npm {
         let mut problems = Vec::new();
         for package in &request.packages {
             let file = join(&package.unit.path, "package.json");
-            let destination = tempfile::tempdir().map_err(|err| {
-                AdapterError::new(
-                    &file,
-                    format!("cannot create a directory to pack into: {err}"),
-                )
-            })?;
-            let mut command = std::process::Command::new(tool);
-            command
-                .arg("pack")
-                .arg("--pack-destination")
-                .arg(destination.path())
-                .current_dir(root.join(&package.unit.path));
-            let output = run_tool(&mut command, tool, &file, "packing it")?;
             let problem = |message: String| PackageProblem {
                 units: vec![package.unit.name.clone()],
                 message,
             };
-            if !output.status.success() {
-                problems.push(problem(format!(
-                    "`{tool} pack` failed: {}",
-                    super::tool_message(&output)
-                )));
-                continue;
-            }
-            let packed = packed_manifest(destination.path())
+            let packed = match pack(root, &package.unit, tool)? {
+                Ok(packed) => packed,
+                Err(message) => {
+                    problems.push(problem(message));
+                    continue;
+                }
+            };
+            let packed = packed_manifest(&packed.archive)
                 .map_err(|message| AdapterError::new(&file, message))?;
             problems.extend(
                 check_packed(&packed, &package.version, &units_by_package, &released)
@@ -381,6 +351,213 @@ impl Adapter for Npm {
         }
         Ok(Prepared { problems })
     }
+
+    fn publishing_tools(&self, request: &ToolsRequest) -> Result<Tools, AdapterError> {
+        let mut tools = vec![package_manager(&request.root).to_string()];
+        if !tools.iter().any(|tool| tool == "npm") {
+            tools.push("npm".to_string());
+        }
+        Ok(Tools { tools })
+    }
+
+    /// Packs the package as `prepare` does, with the workspace's package
+    /// manager, and publishes the archive with `npm publish`, which handles
+    /// tokens, trusted publishing and provenance as the environment
+    /// configures them. The distribution tag follows [`dist_tag`].
+    fn publish(&self, request: &PublishRequest) -> Result<Published, AdapterError> {
+        let root = &request.root;
+        let unit = &request.package.unit;
+        let target = Target::of(root, unit)?;
+        let published = |outcome: PublishOutcome, dist_tag: Option<String>| Published {
+            unit: unit.name.clone(),
+            registry: target.describe(),
+            outcome,
+            dist_tag,
+        };
+        let failed = |message: String| published(PublishOutcome::Failed { message }, None);
+        let version = match semver::Version::parse(&request.package.version) {
+            Ok(version) => version,
+            Err(err) => {
+                return Ok(failed(format!(
+                    "`{}` is not a semantic version: {err}",
+                    request.package.version
+                )));
+            }
+        };
+        let latest = if version.pre.is_empty() {
+            let mut command = std::process::Command::new("npm");
+            command
+                .args(["view", &target.name, "dist-tags", "--json"])
+                .args(target.registry_args())
+                .current_dir(root);
+            let output = run_tool(&mut command, "npm", &target.file, "asking the registry")?;
+            match npm_latest(&output) {
+                Ok(latest) => latest,
+                Err(problem) => {
+                    return Ok(failed(format!(
+                        "`npm view {} dist-tags`: {problem}",
+                        target.name
+                    )));
+                }
+            }
+        } else {
+            None
+        };
+        let dist_tag = match dist_tag(&version, latest.as_ref()) {
+            Ok(tag) => tag,
+            Err(problem) => return Ok(failed(problem)),
+        };
+        let packed = match pack(root, unit, package_manager(root))? {
+            Ok(packed) => packed,
+            Err(message) => return Ok(failed(message)),
+        };
+        let manifest = match packed_manifest(&packed.archive) {
+            Ok(manifest) => manifest,
+            Err(message) => return Ok(failed(message)),
+        };
+        let packed_version = manifest.get("version").and_then(Value::as_str);
+        if packed_version != Some(request.package.version.as_str()) {
+            return Ok(failed(format!(
+                "the packed package.json has the version {}, but the release is {}",
+                packed_version.unwrap_or("(none)"),
+                request.package.version
+            )));
+        }
+        let mut command = std::process::Command::new("npm");
+        command
+            .arg("publish")
+            .arg(&packed.archive)
+            .args(["--tag", &dist_tag])
+            .args(target.registry_args())
+            .current_dir(root);
+        let output = run_tool(&mut command, "npm", &target.file, "publishing it")?;
+        let outcome = if output.status.success() {
+            PublishOutcome::Published
+        } else {
+            let message = super::tool_message(&output);
+            if already_published(&message) {
+                PublishOutcome::AlreadyPresent { message }
+            } else {
+                PublishOutcome::Failed {
+                    message: format!("`npm publish` failed: {message}"),
+                }
+            }
+        };
+        Ok(published(outcome, Some(dist_tag)))
+    }
+}
+
+/// A package's name and the registry its `publishConfig` names, which
+/// queries and publication go to.
+struct Target {
+    file: String,
+    name: String,
+    registry: Option<String>,
+}
+
+impl Target {
+    fn of(root: &Path, unit: &UnitRef) -> Result<Target, AdapterError> {
+        let file = join(&unit.path, "package.json");
+        let manifest: Value = serde_json::from_str(&read(root, &file)?)
+            .map_err(|err| AdapterError::new(&file, err.to_string()))?;
+        let name = manifest
+            .get("name")
+            .and_then(Value::as_str)
+            .ok_or_else(|| AdapterError::new(&file, "has no `name` string"))?
+            .to_string();
+        let registry = manifest
+            .pointer("/publishConfig/registry")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        Ok(Target {
+            file,
+            name,
+            registry,
+        })
+    }
+
+    /// The options that send npm to the registry `publishConfig` names.
+    fn registry_args(&self) -> Vec<String> {
+        let Some(registry) = &self.registry else {
+            return Vec::new();
+        };
+        let mut args = vec![format!("--registry={registry}")];
+        // npm takes a scoped package's registry from the scope's setting,
+        // which outranks `--registry`.
+        if let Some((scope, _)) = self
+            .name
+            .split_once('/')
+            .filter(|_| self.name.starts_with('@'))
+        {
+            args.push(format!("--{scope}:registry={registry}"));
+        }
+        args
+    }
+
+    fn describe(&self) -> String {
+        match &self.registry {
+            Some(registry) => format!("the npm registry {registry}"),
+            None => "the npm registry the environment configures".to_string(),
+        }
+    }
+}
+
+/// The distribution tag of a version, given the registry's `latest`: a
+/// prerelease's label, `latest` for a final version above the registry's
+/// `latest` or when there is none, and `superseded` for a lower final
+/// version, so that a maintenance release never moves `latest` back.
+fn dist_tag(version: &semver::Version, latest: Option<&semver::Version>) -> Result<String, String> {
+    if !version.pre.is_empty() {
+        let label = version.pre.as_str().split('.').next().unwrap_or_default();
+        // npm refuses a tag that it would read as a version range.
+        if label.is_empty() || Range::parse(label).is_ok() {
+            return Err(format!(
+                "the prerelease {version} has no label that npm accepts as a distribution tag"
+            ));
+        }
+        return Ok(label.to_string());
+    }
+    Ok(match latest {
+        Some(latest) if version <= latest => "superseded".to_string(),
+        _ => "latest".to_string(),
+    })
+}
+
+/// Whether npm's message says the registry holds the version already.
+fn already_published(message: &str) -> bool {
+    [
+        "EPUBLISHCONFLICT",
+        "E409",
+        "cannot publish over the previously published versions",
+        "cannot publish over existing version",
+        "previously published version",
+    ]
+    .iter()
+    .any(|sign| message.contains(sign))
+}
+
+/// The `latest` tag `npm view <name> dist-tags --json` reports; none when
+/// the registry does not hold the package.
+fn npm_latest(output: &std::process::Output) -> Result<Option<semver::Version>, String> {
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let value: Option<Value> = serde_json::from_str(stdout.trim()).ok();
+    if !output.status.success() {
+        return match npm_error(output, value.as_ref()) {
+            None => Ok(None),
+            Some(problem) => Err(problem),
+        };
+    }
+    let Some(latest) = value.as_ref().and_then(|tags| tags.get("latest")) else {
+        return match value {
+            Some(Value::Object(_)) => Ok(None),
+            None if stdout.trim().is_empty() => Ok(None),
+            _ => Err(format!("unexpected output: {}", stdout.trim())),
+        };
+    };
+    let latest = latest.as_str().unwrap_or_default();
+    semver::Version::parse(latest)
+        .map(Some)
+        .map_err(|err| format!("the `latest` tag names `{latest}`, not a version: {err}"))
 }
 
 /// The package manager of the workspace at `root`: pnpm where it has a
@@ -393,21 +570,57 @@ fn package_manager(root: &Path) -> &'static str {
     }
 }
 
-/// The `package.json` of the only archive packed into `dir`.
-fn packed_manifest(dir: &Path) -> Result<Value, String> {
-    let entries =
-        std::fs::read_dir(dir).map_err(|err| format!("cannot list {}: {err}", dir.display()))?;
-    let archives: Vec<_> = entries
+/// A package packed into a temporary directory, removed with it.
+struct Packed {
+    archive: PathBuf,
+    _dir: tempfile::TempDir,
+}
+
+/// Packs a unit with the workspace's package manager `tool`, running the
+/// lifecycle scripts packing runs; the tool's failure in its words.
+fn pack(root: &Path, unit: &UnitRef, tool: &str) -> Result<Result<Packed, String>, AdapterError> {
+    let file = join(&unit.path, "package.json");
+    let dir = tempfile::tempdir().map_err(|err| {
+        AdapterError::new(
+            &file,
+            format!("cannot create a directory to pack into: {err}"),
+        )
+    })?;
+    let mut command = std::process::Command::new(tool);
+    command
+        .arg("pack")
+        .arg("--pack-destination")
+        .arg(dir.path())
+        .current_dir(root.join(&unit.path));
+    let output = run_tool(&mut command, tool, &file, "packing it")?;
+    if !output.status.success() {
+        return Ok(Err(format!(
+            "`{tool} pack` failed: {}",
+            super::tool_message(&output)
+        )));
+    }
+    let entries = std::fs::read_dir(dir.path()).map_err(|err| {
+        AdapterError::new(&file, format!("cannot list the packed archive: {err}"))
+    })?;
+    let archives: Vec<PathBuf> = entries
         .filter_map(Result::ok)
         .map(|entry| entry.path())
         .filter(|path| path.extension().is_some_and(|extension| extension == "tgz"))
         .collect();
     let [archive] = archives.as_slice() else {
-        return Err(format!(
+        return Ok(Err(format!(
             "packing it left {} archives instead of one",
             archives.len()
-        ));
+        )));
     };
+    Ok(Ok(Packed {
+        archive: archive.clone(),
+        _dir: dir,
+    }))
+}
+
+/// The `package.json` of a packed archive.
+fn packed_manifest(archive: &Path) -> Result<Value, String> {
     let unreadable = |err: std::io::Error| format!("cannot read the packed archive: {err}");
     let file = std::fs::File::open(archive).map_err(unreadable)?;
     let mut tarball = tar::Archive::new(flate2::read::GzDecoder::new(file));
@@ -493,21 +706,10 @@ fn npm_versions(output: &std::process::Output) -> Result<Vec<String>, String> {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let value: Option<Value> = serde_json::from_str(stdout.trim()).ok();
     if !output.status.success() {
-        let code = value
-            .as_ref()
-            .and_then(|value| value.pointer("/error/code"))
-            .and_then(Value::as_str);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        if code == Some("E404") || stderr.contains("code E404") {
-            return Ok(Vec::new());
-        }
-        let summary = value
-            .as_ref()
-            .and_then(|value| value.pointer("/error/summary"))
-            .and_then(Value::as_str)
-            .map(str::to_string)
-            .unwrap_or_else(|| stderr.trim().to_string());
-        return Err(summary);
+        return match npm_error(output, value.as_ref()) {
+            None => Ok(Vec::new()),
+            Some(problem) => Err(problem),
+        };
     }
     match value {
         Some(Value::Array(versions)) => Ok(versions
@@ -519,6 +721,25 @@ fn npm_versions(output: &std::process::Output) -> Result<Vec<String>, String> {
         None if stdout.trim().is_empty() => Ok(Vec::new()),
         _ => Err(format!("unexpected output: {}", stdout.trim())),
     }
+}
+
+/// The problem a failed `npm view` reports, `None` for E404, which npm
+/// answers for a package the registry does not hold.
+fn npm_error(output: &std::process::Output, value: Option<&Value>) -> Option<String> {
+    let code = value
+        .and_then(|value| value.pointer("/error/code"))
+        .and_then(Value::as_str);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if code == Some("E404") || stderr.contains("code E404") {
+        return None;
+    }
+    Some(
+        value
+            .and_then(|value| value.pointer("/error/summary"))
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .unwrap_or_else(|| stderr.trim().to_string()),
+    )
 }
 
 /// A reference resolved to the range the dependent's last release accepts.
@@ -964,6 +1185,61 @@ mod tests {
             npm_versions(&output(1, denied, "")),
             Err("Unable to authenticate".to_string())
         );
+        let version = |text: &str| semver::Version::parse(text).unwrap();
+        assert_eq!(
+            npm_latest(&output(
+                0,
+                "{\"latest\": \"2.1.0\", \"beta\": \"3.0.0-beta.0\"}\n",
+                ""
+            )),
+            Ok(Some(version("2.1.0")))
+        );
+        assert_eq!(npm_latest(&output(0, "{}\n", "")), Ok(None));
+        assert_eq!(npm_latest(&output(1, not_found, "")), Ok(None));
+        assert_eq!(
+            npm_latest(&output(1, denied, "")),
+            Err("Unable to authenticate".to_string())
+        );
+    }
+
+    #[test]
+    fn distribution_tags() {
+        let version = |text: &str| semver::Version::parse(text).unwrap();
+        let cases = [
+            ("1.5.0-beta.0", Some("2.1.0"), Ok("beta")),
+            ("3.0.0-rc.2", None, Ok("rc")),
+            ("2.2.0", Some("2.1.0"), Ok("latest")),
+            ("1.0.0", None, Ok("latest")),
+            ("1.9.4", Some("2.1.0"), Ok("superseded")),
+            ("2.0.0", Some("2.1.0-beta.0"), Ok("superseded")),
+            ("2.1.0", Some("2.1.0-beta.0"), Ok("latest")),
+            ("1.0.0-1", None, Err(())),
+        ];
+        for (published, latest, expected) in cases {
+            let latest = latest.map(version);
+            let tag = dist_tag(&version(published), latest.as_ref());
+            assert_eq!(
+                tag.as_deref().map_err(|_| ()),
+                expected,
+                "{published} with latest {latest:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn answers_that_the_version_exists() {
+        assert!(already_published(
+            "npm error code E403\nnpm error 403 Forbidden - PUT https://registry.npmjs.org/api - \
+             You cannot publish over the previously published versions: 1.4.3."
+        ));
+        assert!(already_published(
+            "npm error code E409\nnpm error 409 Conflict - PUT http://localhost/api - this \
+             package is already present"
+        ));
+        assert!(!already_published(
+            "npm error code ENEEDAUTH\nnpm error need auth This command requires you to be \
+             logged in"
+        ));
     }
 
     #[test]

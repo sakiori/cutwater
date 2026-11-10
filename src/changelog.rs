@@ -99,26 +99,45 @@ pub fn prepend(existing: Option<&str>, title: &str, section: &str) -> String {
     }
 }
 
+/// The changes the changelog `text` lists for `version`: the text below its
+/// version heading up to the next version heading, `None` when no heading
+/// names the version.
+pub fn released_entry(text: &str, version: &str) -> Option<String> {
+    let mut lines = text.split_inclusive('\n');
+    lines
+        .by_ref()
+        .find(|line| version_heading(line) == Some(version))?;
+    let body: String = lines
+        .take_while(|line| version_heading(line).is_none())
+        .collect();
+    Some(body.trim().to_string())
+}
+
 /// The offset of the first line that is a Markdown heading starting with a
 /// version, `## 1.2.3`.
 fn first_version_heading(text: &str) -> Option<usize> {
     let mut offset = 0;
     for line in text.split_inclusive('\n') {
-        let hashes = line.chars().take_while(|c| *c == '#').count();
-        let rest = &line[hashes..];
-        let after_space = rest.trim_start_matches([' ', '\t']);
-        let digits = after_space.chars().take_while(char::is_ascii_digit).count();
-        let is_heading = (1..=6).contains(&hashes)
-            && after_space.len() < rest.len()
-            && digits > 0
-            && after_space[digits..].starts_with('.')
-            && after_space[digits + 1..].starts_with(|c: char| c.is_ascii_digit());
-        if is_heading {
+        if version_heading(line).is_some() {
             return Some(offset);
         }
         offset += line.len();
     }
     None
+}
+
+/// The text of a Markdown heading line that starts with a version, `## 1.2.3`.
+fn version_heading(line: &str) -> Option<&str> {
+    let hashes = line.chars().take_while(|c| *c == '#').count();
+    let rest = &line[hashes..];
+    let after_space = rest.trim_start_matches([' ', '\t']);
+    let digits = after_space.chars().take_while(char::is_ascii_digit).count();
+    let is_heading = (1..=6).contains(&hashes)
+        && after_space.len() < rest.len()
+        && digits > 0
+        && after_space[digits..].starts_with('.')
+        && after_space[digits + 1..].starts_with(|c: char| c.is_ascii_digit());
+    is_heading.then(|| after_space.trim_end())
 }
 
 #[cfg(test)]
@@ -212,6 +231,31 @@ mod tests {
         assert_eq!(
             prepend(Some("# api"), "api", new),
             "# api\n\n## 1.5.0\n\n### Minor Changes\n\n- Add the export endpoint.\n"
+        );
+    }
+
+    #[test]
+    fn entry_of_a_version() {
+        let text = "# api\n\n## 1.5.0\n\n### Minor Changes\n\n- Add.\n\n## 1.5.0-beta.0\n\n\
+                    - Beta.\n\n## 1.4.2\n\n### Patch Changes\n\n- Fix.\n";
+        assert_eq!(
+            released_entry(text, "1.5.0").as_deref(),
+            Some("### Minor Changes\n\n- Add.")
+        );
+        assert_eq!(
+            released_entry(text, "1.5.0-beta.0").as_deref(),
+            Some("- Beta.")
+        );
+        assert_eq!(
+            released_entry(text, "1.4.2").as_deref(),
+            Some("### Patch Changes\n\n- Fix.")
+        );
+        assert_eq!(released_entry(text, "1.4"), None);
+        assert_eq!(released_entry(text, "2.0.0"), None);
+        let sections = prepend(Some(text), "api", &section("1.6.0", Bump::Patch, &[], &[]));
+        assert_eq!(
+            released_entry(&sections, "1.6.0").as_deref(),
+            Some("No changes in this release.")
         );
     }
 

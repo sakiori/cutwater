@@ -243,6 +243,16 @@ impl Git {
         Ok(Some(out.checked()?.trim().to_string()))
     }
 
+    /// Whether commit `a` is `b` or one of its ancestors.
+    pub fn is_ancestor(&self, a: &str, b: &str) -> Result<bool> {
+        let out = self.raw(&["merge-base", "--is-ancestor", a, b])?;
+        match out.code {
+            Some(0) => Ok(true),
+            Some(1) => Ok(false),
+            _ => Err(out.checked().unwrap_err().into()),
+        }
+    }
+
     /// The content of `path` in commit `rev`, or `None` when the commit has
     /// no such file.
     pub fn file_at(&self, rev: &str, path: &str) -> Result<Option<String>> {

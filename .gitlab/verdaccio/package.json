@@ -1,0 +1,9 @@
+{
+  "name": "cutwater-verdaccio",
+  "private": true,
+  "description": "Verdaccio, the npm registry the registry tests publish to, pinned with its whole dependency tree by package-lock.json",
+  "license": "MIT",
+  "dependencies": {
+    "verdaccio": "7.1.0"
+  }
+}

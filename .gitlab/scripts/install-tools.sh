@@ -7,7 +7,7 @@
 # download's SHA-256, as its release lists it and as a download shows it.
 #
 # usage: .gitlab/scripts/install-tools.sh <dir> <tool>...
-#   tools: cargo-deny, shellcheck, node (with npm), pnpm
+#   tools: cargo-deny, shellcheck, node (with npm), pnpm, cargo-http-registry
 set -eu
 
 dir=${1:?usage: install-tools.sh <dir> <tool>...}
@@ -71,6 +71,17 @@ for tool in "$@"; do
         3726060e236c0db3e7124c0a5af123c840ba0cb76682149b63ea0baf290017c2 \
         pnpm
       ln -sf ../pnpm/pnpm "$dir/bin/pnpm"
+      ;;
+    cargo-http-registry)
+      # A Cargo registry for the registry tests. crates.io publishes no
+      # binary of it, so it is built from its crate with the dependencies
+      # that the crate's Cargo.lock pins.
+      version=0.1.8
+      unpack_all "https://static.crates.io/crates/cargo-http-registry/cargo-http-registry-$version.crate" \
+        193f465b09986c2c07ae55bf52131fb51ab2cd89c18ebfca1672cf13e7eb92cd \
+        cargo-http-registry-src 1
+      cargo install --locked --quiet --path "$dir/cargo-http-registry-src" --root "$dir"
+      rm -rf "${dir:?}/cargo-http-registry-src"
       ;;
     *)
       echo "unknown tool: $tool" >&2

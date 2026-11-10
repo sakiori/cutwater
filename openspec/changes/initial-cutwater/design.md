@@ -52,6 +52,12 @@ The tool serves several ecosystems, so it must not require the runtime of one of
 
 Alternative: TypeScript, with plugins as ESM modules loaded by path. Rejected because it ties every adopter to Node.
 
+### Cargo crates are published one at a time
+
+`publish` runs `cargo publish --locked` for one crate at a time, in the release graph's order, and asks the registry before and after each. A crate is therefore published against its dependencies as the registry holds them, and a retry continues where the last run stopped. `--locked` publishes the dependency versions of the reviewed `Cargo.lock`, and cargo's verification build stays on. Cargo resolves every dependency that names a version before it publishes a crate, development dependencies included, so these edges order publication too. A cycle through such a development dependency cannot be published by cargo in any order, inside a fixed group as well, and planning refuses it; dropping the development dependency's version breaks it.
+
+Alternative: one `cargo publish` with every crate of the release selected, which since cargo 1.90 publishes the selected crates in its own order. Rejected because it reports one outcome for all of them: a failure could not hold back only the crates that depend on the failed one, and the tool could not ask the registry between crates, which counting a crate as published and continuing after a partial publication need.
+
 ### Version policy of npm distribution tags
 
 A final release above the registry's `latest` becomes `latest`, a lower one goes to `superseded`, and a prerelease goes to its label. Maintenance releases therefore never move `latest` backwards. npm also refuses to publish a prerelease without an explicit tag. A lower version is not refused: versions come only from the manifest, which only the plan raises, so a lower one is a deliberate maintenance release.
@@ -67,6 +73,5 @@ The tool releases itself through its own changesets and release merge request, w
 ## Risks and open points
 
 - Whether a commit through the commits API to a merge request in a merge train behaves like a push needs confirming on a disposable project. So do the pipelines a fast-forward merge starts.
-- Cargo keeps dev-dependencies that declare a version in the published manifest. Whether they constrain publication order needs confirming against `cargo publish --workspace`, which orders a workspace itself.
 - The Maven adapter reads POMs without running Maven. Dependency versions that inheritance or profiles change are outside edge discovery, and integration tests against real Maven confirm the supported cases.
 - GitHub as a forge, maintenance branches, external adapters, Maven Central's Portal and Maven 4 are not part of this change. The forge interface, the `superseded` distribution tag and the adapter interface keep each of them possible.

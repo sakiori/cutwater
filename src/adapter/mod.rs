@@ -171,8 +171,8 @@ impl EdgeKind {
         self != EdgeKind::Development
     }
 
-    /// Whether the edge orders publication: the dependency is published
-    /// before the dependent.
+    /// Whether an edge of this kind orders publication: the dependency is
+    /// published before the dependent.
     pub fn orders_publication(self) -> bool {
         matches!(
             self,
@@ -218,8 +218,20 @@ pub struct Edge {
     /// Whether the reference follows the dependency's version by itself,
     /// such as `workspace:^`, so that it never needs rewriting.
     pub follows: bool,
+    /// Whether the ecosystem's tool publishes the dependent only once the
+    /// registry holds the dependency's version, whatever the edge's kind,
+    /// as cargo does for every dependency that names a version.
+    pub published_first: bool,
     /// Where the reference's range is written.
     pub location: Location,
+}
+
+impl Edge {
+    /// Whether the edge orders publication: the dependency is published
+    /// before the dependent.
+    pub fn orders_publication(&self) -> bool {
+        self.kind.orders_publication() || self.published_first
+    }
 }
 
 /// The request to judge whether a range accepts a version.
@@ -323,6 +335,60 @@ pub trait Adapter: Sync {
     /// and checks it: that it carries the released versions and nothing
     /// only the repository can resolve.
     fn prepare(&self, request: &PrepareRequest) -> Result<Prepared, AdapterError>;
+
+    /// The ecosystem tools that publishing the units runs, so that a missing
+    /// one is named before anything is published.
+    fn publishing_tools(&self, request: &ToolsRequest) -> Result<Tools, AdapterError>;
+
+    /// Publishes a version of a unit to its registry with the ecosystem's
+    /// tool and the credentials of the environment, without logging in.
+    /// Never replaces or withdraws a version.
+    fn publish(&self, request: &PublishRequest) -> Result<Published, AdapterError>;
+}
+
+/// The request for the tools that publishing runs.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolsRequest {
+    pub root: PathBuf,
+    /// The adapter's units.
+    pub units: Vec<UnitRef>,
+}
+
+/// The names of executables that must be on the `PATH`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Tools {
+    pub tools: Vec<String>,
+}
+
+/// The request to publish a version of a unit.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PublishRequest {
+    pub root: PathBuf,
+    /// The adapter's units.
+    pub units: Vec<UnitRef>,
+    pub package: VersionQuery,
+}
+
+/// What publishing a version did.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Published {
+    pub unit: String,
+    /// The registry published to.
+    pub registry: String,
+    pub outcome: PublishOutcome,
+    /// The npm distribution tag the version was published under.
+    pub dist_tag: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "outcome", rename_all = "kebab-case")]
+pub enum PublishOutcome {
+    /// The registry accepted the version.
+    Published,
+    /// The registry answered that it holds the version already.
+    AlreadyPresent { message: String },
+    /// The tool failed, in its words.
+    Failed { message: String },
 }
 
 /// The request to prepare and check what units would publish.

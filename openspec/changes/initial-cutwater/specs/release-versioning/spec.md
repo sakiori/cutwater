@@ -55,6 +55,17 @@ The release graph's edges SHALL be the runtime, Cargo build and optional depende
 - **WHEN** `web` and `ui` form a fixed group and `web` depends on `ui`
 - **THEN** `ui` is published before `web`
 
+### Requirement: Dependencies the ecosystem's tool publishes first
+The release graph SHALL also hold every dependency between units that the ecosystem's tool needs in the registry before it publishes the dependent: for Cargo, each dependency that names a version, development dependencies included. Such an edge SHALL count between members of the same fixed group too, because the tool publishes them one at a time.
+
+#### Scenario: Cargo development dependency with a version
+- **WHEN** the crate `core` declares `testkit` as a development dependency with a version, and `testkit` depends on `core` at runtime, in different groups
+- **THEN** `status`, `version` and `mr` refuse and list the edges `core → testkit` and `testkit → core`, because cargo publishes neither before the other is in the registry
+
+#### Scenario: Such a cycle inside a fixed group
+- **WHEN** the crates `core` and `testkit` form a fixed group, `core` declares `testkit` as a development dependency with a version, and `testkit` depends on `core` at runtime with a version
+- **THEN** `status`, `version` and `mr` refuse and list both edges, and do not suggest a fixed group
+
 ### Requirement: Version manifest
 The tool SHALL keep `.cutwater/versions.toml` with the released version of every unit. Only `init` and `version` SHALL write it, and `check` SHALL fail a merge request other than the release merge request that changes an existing manifest. Where an adapter's files also hold the released version, `check` SHALL fail when the two disagree, naming the unit and both versions.
 

@@ -22,20 +22,21 @@ pub fn order<'e>(units: &Units, edges: &'e [Edge]) -> Result<Vec<String>, Vec<&'
             .is_some_and(|group| group.members.iter().any(|member| member == b))
     };
     // Edges from the dependent to the dependency; `true` for one between
-    // members of a fixed group.
+    // members of a fixed group that only orders them where it can. An edge
+    // the ecosystem's tool needs published first holds inside a group too.
     let mut graph_edges: Vec<(&str, &str, bool, &Edge)> = Vec::new();
     for edge in edges {
         let Some(dependent) = edge.dependent_unit.as_deref() else {
             continue;
         };
-        if !edge.kind.orders_publication()
+        if !edge.orders_publication()
             || dependent == edge.dependency
             || !names.contains(&dependent)
             || !names.contains(&edge.dependency.as_str())
         {
             continue;
         }
-        let soft = same_group(dependent, &edge.dependency);
+        let soft = same_group(dependent, &edge.dependency) && !edge.published_first;
         graph_edges.push((dependent, edge.dependency.as_str(), soft, edge));
     }
 
@@ -146,6 +147,7 @@ mod tests {
             reference: "^1.0.0".to_string(),
             range: Some("^1.0.0".to_string()),
             follows: false,
+            published_first: false,
             location: Location {
                 file: format!("{dependent}/package.json"),
                 keys: vec!["dependencies".to_string(), dependency.to_string()],
@@ -181,6 +183,12 @@ mod tests {
             .map(|edge| format!("{:?} -> {}", edge.dependent_unit, edge.dependency))
             .collect();
         assert_eq!(cycle, ["Some(\"a\") -> b", "Some(\"b\") -> a"]);
+        // A development dependency the ecosystem's tool needs published
+        // first, as cargo needs one that names a version, orders publication.
+        let mut needed = edge("c", "a", EdgeKind::Development);
+        needed.published_first = true;
+        let edges = [edge("a", "c", EdgeKind::Runtime), needed];
+        assert_eq!(order(&units, &edges).unwrap_err().len(), 2);
     }
 
     #[test]
@@ -198,5 +206,14 @@ mod tests {
             edge("web", "api", EdgeKind::Runtime),
         ];
         assert_eq!(order(&units, &edges).unwrap(), ["api", "ui", "web"]);
+        // Not when the ecosystem's tool needs a dependency published first.
+        let mut needed = edge("ui", "web", EdgeKind::Development);
+        needed.published_first = true;
+        let edges = [edge("web", "ui", EdgeKind::Runtime), needed.clone()];
+        assert_eq!(order(&units, &edges).unwrap(), ["api", "web", "ui"]);
+        let mut first = edge("web", "ui", EdgeKind::Runtime);
+        first.published_first = true;
+        let edges = [first, needed];
+        assert_eq!(order(&units, &edges).unwrap_err().len(), 2);
     }
 }

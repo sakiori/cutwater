@@ -1,6 +1,7 @@
-//! The forge: what `mr` needs from the service that hosts the repository,
-//! its branches and its merge requests. GitLab is the only implementation;
-//! the interface keeps the commands independent of it.
+//! The forge: what `mr` and `publish` need from the service that hosts the
+//! repository, its branches, merge requests, pipelines, tags, releases and
+//! package registry. GitLab is the only implementation; the interface keeps
+//! the commands independent of it.
 
 pub mod gitlab;
 
@@ -105,7 +106,88 @@ pub struct NewCommit<'a> {
     pub actions: &'a [FileAction],
 }
 
-/// The operations `mr` performs on the forge.
+/// The account whose token the tool uses.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Bot {
+    pub id: u64,
+    pub username: String,
+    /// Whether the account administers the instance.
+    pub admin: bool,
+}
+
+/// A rule that protects the tags matching `pattern`, in which `*` stands
+/// for any text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProtectedTag {
+    pub pattern: String,
+    /// Who may create the tags; anyone the rules name.
+    pub create: Vec<CreateAccess>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CreateAccess {
+    /// Members with this access level or a higher one; 0 for no one.
+    Level(u32),
+    User(u64),
+    /// The members of a group.
+    Group(u64),
+    DeployKey(u64),
+}
+
+/// A group the project is shared with.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GroupShare {
+    pub group: u64,
+    /// The highest access level the group's members get in the project.
+    pub access: u32,
+}
+
+/// The newest pipeline of a commit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Pipeline {
+    pub id: u64,
+    pub status: String,
+    pub url: String,
+}
+
+impl Pipeline {
+    /// Whether the pipeline is over: no job of it runs or waits any more.
+    pub fn finished(&self) -> bool {
+        matches!(
+            self.status.as_str(),
+            "success" | "failed" | "canceled" | "skipped"
+        )
+    }
+}
+
+/// A file of a package in the project's generic package registry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PackageFile {
+    pub name: String,
+    /// The SHA-256 checksum of its content, in lowercase hex.
+    pub sha256: String,
+}
+
+/// A link of a release to one of its assets.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReleaseLink {
+    pub name: String,
+    pub url: String,
+    /// The path of the asset's permanent link below the release.
+    pub path: String,
+}
+
+/// A release to create, tagging `commit` when its tag does not exist.
+#[derive(Debug, Clone)]
+pub struct NewRelease<'a> {
+    pub tag: &'a str,
+    pub commit: &'a str,
+    pub name: &'a str,
+    pub notes: &'a str,
+    pub links: &'a [ReleaseLink],
+}
+
+/// The operations `mr` and `publish` perform on the forge.
 pub trait Forge {
     /// How the project merges merge requests.
     fn merge_settings(&self) -> Result<MergeSettings>;
@@ -136,4 +218,51 @@ pub trait Forge {
 
     /// Adds `note` to the merge request and closes it.
     fn close_merge_request(&self, number: u64, note: &str) -> Result<()>;
+
+    /// The account of the token.
+    fn bot(&self) -> Result<Bot>;
+
+    /// The access level of a user in the project, inherited ones included;
+    /// 0 when the user is no member.
+    fn access_level(&self, user: u64) -> Result<u32>;
+
+    /// The access level of a user's own membership of a group, not one
+    /// inherited from a group above it; `None` when the user has none.
+    fn direct_group_member(&self, group: u64, user: u64) -> Result<Option<u32>>;
+
+    /// The groups the project is shared with, `None` when the forge does
+    /// not say.
+    fn shared_groups(&self) -> Result<Option<Vec<GroupShare>>>;
+
+    /// The project's protected tags.
+    fn protected_tags(&self) -> Result<Vec<ProtectedTag>>;
+
+    /// The commit a tag points at, `None` when the tag does not exist.
+    fn tag(&self, name: &str) -> Result<Option<String>>;
+
+    /// Whether the release of a tag exists.
+    fn has_release(&self, tag: &str) -> Result<bool>;
+
+    /// The newest pipeline of `commit` on `branch`.
+    fn latest_pipeline(&self, commit: &str, branch: &str) -> Result<Option<Pipeline>>;
+
+    /// The files of a version of a package in the generic package registry.
+    fn package_files(&self, package: &str, version: &str) -> Result<Vec<PackageFile>>;
+
+    /// Uploads a file to a version of a package in the generic package
+    /// registry.
+    fn upload_package_file(
+        &self,
+        package: &str,
+        version: &str,
+        file: &str,
+        content: &[u8],
+    ) -> Result<()>;
+
+    /// Where a file of the generic package registry is downloaded from.
+    fn package_file_url(&self, package: &str, version: &str, file: &str) -> String;
+
+    /// Creates a release, and its tag on its commit where the tag does not
+    /// exist.
+    fn create_release(&self, release: &NewRelease) -> Result<()>;
 }

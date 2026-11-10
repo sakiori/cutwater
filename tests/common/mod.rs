@@ -2,6 +2,8 @@
 
 #![allow(dead_code)]
 
+pub mod publish;
+
 use std::path::Path;
 use std::process::Command;
 
@@ -215,9 +217,12 @@ fn isolated(mut cmd: Command, dir: &Path) -> Command {
 }
 
 /// Registries that hold the given versions, answered by `npm` and `cargo`
-/// stand-ins put first on the `PATH`: `npm view <name> versions --json`
-/// and `cargo info <name>[@<version>]` answer as the real tools do, and
-/// every other command goes to the real tool. Each query is logged.
+/// stand-ins put first on the `PATH`: `npm view <name> versions --json`,
+/// `npm view <name> dist-tags --json` and `cargo info <name>[@<version>]`
+/// answer as the real tools do, and `npm publish <archive>` and `cargo
+/// publish --package <name>` add the version they publish, unless the
+/// package is set to fail. Every other command goes to the real tool. Each
+/// query and publication is logged.
 pub struct Registry {
     dir: tempfile::TempDir,
 }
@@ -242,13 +247,29 @@ impl Registry {
 if [ "$1" = view ]; then
   echo "npm $*" >> '{log}'
   file="{data}/$(printf '%s' "$2" | tr / %)"
-  if [ -f "$file" ]; then
-    printf '['; sep=''
-    while read -r version; do printf '%s"%s"' "$sep" "$version"; sep=','; done < "$file"
-    printf ']\n'; exit 0
+  if [ ! -f "$file" ]; then
+    printf '{{"error": {{"code": "E404", "summary": "Not Found"}}}}\n'
+    echo 'npm error code E404' >&2; exit 1
   fi
-  printf '{{"error": {{"code": "E404", "summary": "Not Found"}}}}\n'
-  echo 'npm error code E404' >&2; exit 1
+  if [ "$3" = dist-tags ]; then
+    if [ -f "$file.latest" ]; then latest=$(cat "$file.latest"); else latest=$(tail -n 1 "$file"); fi
+    printf '{{"latest": "%s"}}\n' "$latest"; exit 0
+  fi
+  printf '['; sep=''
+  while read -r version; do printf '%s"%s"' "$sep" "$version"; sep=','; done < "$file"
+  printf ']\n'; exit 0
+fi
+if [ "$1" = publish ]; then
+  archive=$2; shift 2
+  manifest=$(tar -xzOf "$archive" package/package.json)
+  name=$(printf '%s' "$manifest" | sed -n 's/^  "name": "\(.*\)",$/\1/p')
+  version=$(printf '%s' "$manifest" | sed -n 's/^  "version": "\(.*\)",*$/\1/p')
+  echo "npm publish $name@$version $*" >> '{log}'
+  file="{data}/$(printf '%s' "$name" | tr / %)"
+  if [ -f "$file.fail" ]; then cat "$file.fail" >&2; exit 1; fi
+  echo "$version" >> "$file"
+  if [ -f "$file.then" ]; then sh "$file.then"; fi
+  exit 0
 fi
 exec '{}' "$@"
 "#,
@@ -270,9 +291,19 @@ if [ "$1" = info ]; then
   fi
   printf '%s\nversion: %s\n' "$name" "$version"; exit 0
 fi
-exec '{}' "$@"
+if [ "$1" = publish ]; then
+  shift; name=
+  for arg in "$@"; do [ "$previous" = --package ] && name=$arg; previous=$arg; done
+  id=$('{cargo}' pkgid --offline --package "$name")
+  version=${{id##*[@#]}}
+  echo "cargo publish $name@$version $*" >> '{log}'
+  file="{data}/$name"
+  if [ -f "$file.fail" ]; then cat "$file.fail" >&2; exit 101; fi
+  echo "$version" >> "$file"; exit 0
+fi
+exec '{cargo}' "$@"
 "#,
-            real("cargo")
+            cargo = real("cargo")
         );
         for (tool, script) in [("npm", npm), ("cargo", cargo)] {
             let path = bin.join(tool);
@@ -281,6 +312,47 @@ exec '{}' "$@"
                 .unwrap();
         }
         Registry { dir }
+    }
+
+    fn file(&self, name: &str) -> std::path::PathBuf {
+        self.dir.path().join("data").join(name.replace('/', "%"))
+    }
+
+    /// Makes publishing `name` fail with `message` until [`Self::recover`].
+    pub fn fail(&self, name: &str, message: &str) {
+        let mut path = self.file(name).into_os_string();
+        path.push(".fail");
+        std::fs::write(path, format!("{message}\n")).unwrap();
+    }
+
+    pub fn recover(&self, name: &str) {
+        let mut path = self.file(name).into_os_string();
+        path.push(".fail");
+        std::fs::remove_file(path).unwrap();
+    }
+
+    /// Runs the shell command `command` after `npm publish` published
+    /// `name`.
+    pub fn after_publishing(&self, name: &str, command: &str) {
+        let mut path = self.file(name).into_os_string();
+        path.push(".then");
+        std::fs::write(path, command).unwrap();
+    }
+
+    /// Sets the npm distribution tag `latest` of `name`.
+    pub fn latest(&self, name: &str, version: &str) {
+        let mut path = self.file(name).into_os_string();
+        path.push(".latest");
+        std::fs::write(path, version).unwrap();
+    }
+
+    /// The versions the registry holds of `name`.
+    pub fn versions(&self, name: &str) -> Vec<String> {
+        std::fs::read_to_string(self.file(name))
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_string)
+            .collect()
     }
 
     /// The `PATH` with the stand-ins first.
@@ -292,7 +364,7 @@ exec '{}' "$@"
         std::env::join_paths(paths).unwrap()
     }
 
-    /// The queries the stand-ins answered, one per line.
+    /// The queries and publications the stand-ins answered, one per line.
     pub fn queries(&self) -> String {
         std::fs::read_to_string(self.dir.path().join("queries")).unwrap_or_default()
     }

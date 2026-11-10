@@ -14,8 +14,9 @@ use super::{
     AcceptsRequest, Adapter, AdapterError, DiscoverRequest, DiscoveredUnit, Discovery, Edge,
     EdgeKind, FileWrite, InspectRequest, Inspection, Location, LockfileRequest, Lockfiles,
     PLAIN_OUTPUT, PackageProblem, PrepareRequest, Prepared, Publication, Publications,
-    PublishedRequest, UnitRef, UnitVersion, VersionQuery, WriteRequest, Writes, join,
-    nearest_lockfiles, resolve_dir, run_tool,
+    PublishOutcome, PublishRequest, Published, PublishedRequest, Tools, ToolsRequest, UnitRef,
+    UnitVersion, VersionQuery, WriteRequest, Writes, join, nearest_lockfiles, resolve_dir,
+    run_tool,
 };
 
 pub struct Cargo;
@@ -153,6 +154,7 @@ impl Adapter for Cargo {
                                 .requirement
                                 .clone()
                                 .unwrap_or_else(|| format!("path {}", dependency.path)),
+                            published_first: dependency.requirement.is_some(),
                             range: dependency.requirement,
                             follows: false,
                             location: dependency.location,
@@ -277,28 +279,7 @@ impl Adapter for Cargo {
         for query in &request.queries {
             let file = join(&query.unit.path, "Cargo.toml");
             let package = package_of(root, &query.unit)?;
-            // `cargo publish` takes the only registry `publish` names, or
-            // the default one, and asks for `--registry` when it names
-            // several.
-            let registry = match package.publish.as_deref() {
-                None => None,
-                Some([registry]) => Some(registry.clone()),
-                Some(registries) => {
-                    return Err(AdapterError::new(
-                        &file,
-                        format!(
-                            "crate `{}` names the registries {} in `publish`, so it is unclear \
-                             which one releases it; name one",
-                            package.name,
-                            registries
-                                .iter()
-                                .map(|registry| format!("`{registry}`"))
-                                .collect::<Vec<_>>()
-                                .join(", ")
-                        ),
-                    ));
-                }
-            };
+            let registry = registry_of(&package, &file)?;
             packages.push((query, file, package.name.to_string(), registry));
         }
 
@@ -307,10 +288,7 @@ impl Adapter for Cargo {
         let scratch = throwaway_package(root)?;
         let mut units = Vec::new();
         for (query, file, name, registry) in packages {
-            let described = match &registry {
-                Some(registry) => format!("the Cargo registry `{registry}`"),
-                None => "the default Cargo registry".to_string(),
-            };
+            let described = describe_registry(registry.as_deref());
             let info = |spec: &str| -> Result<Answer, AdapterError> {
                 let mut command = std::process::Command::new("cargo");
                 command.arg("info").arg(spec).current_dir(scratch.path());
@@ -438,6 +416,96 @@ impl Adapter for Cargo {
             }],
         })
     }
+
+    fn publishing_tools(&self, _request: &ToolsRequest) -> Result<Tools, AdapterError> {
+        Ok(Tools {
+            tools: vec!["cargo".to_string()],
+        })
+    }
+
+    /// Publishes one crate with `cargo publish`, which verifies the
+    /// packaged crate by building it against the registry's versions of its
+    /// dependencies and waits until the registry's index lists it.
+    /// `--locked` publishes the dependency versions of the reviewed
+    /// `Cargo.lock` and fails where it would need a change.
+    fn publish(&self, request: &PublishRequest) -> Result<Published, AdapterError> {
+        let root = &request.root;
+        let unit = &request.package.unit;
+        let file = join(&unit.path, "Cargo.toml");
+        let package = package_of(root, unit)?;
+        let registry = registry_of(&package, &file)?;
+        let published = |outcome| Published {
+            unit: unit.name.clone(),
+            registry: describe_registry(registry.as_deref()),
+            outcome,
+            dist_tag: None,
+        };
+        if package.version.to_string() != request.package.version {
+            return Ok(published(PublishOutcome::Failed {
+                message: format!(
+                    "{file} declares the version {}, but the release is {}",
+                    package.version, request.package.version
+                ),
+            }));
+        }
+        let mut command = std::process::Command::new("cargo");
+        command
+            .args(["publish", "--locked", "--package", &package.name])
+            .current_dir(root);
+        if let Some(registry) = &registry {
+            command.args(["--registry", registry]);
+        }
+        let output = run_tool(&mut command, "cargo", &file, "publishing it")?;
+        Ok(published(if output.status.success() {
+            PublishOutcome::Published
+        } else {
+            let message = cargo_errors(&output);
+            if already_published(&message) {
+                PublishOutcome::AlreadyPresent { message }
+            } else {
+                PublishOutcome::Failed {
+                    message: format!("`cargo publish` failed: {message}"),
+                }
+            }
+        }))
+    }
+}
+
+/// The registry a crate is published to: the only one `publish` names, as
+/// `cargo publish` takes it, or `None` for the default one.
+fn registry_of(
+    package: &cargo_metadata::Package,
+    file: &str,
+) -> Result<Option<String>, AdapterError> {
+    match package.publish.as_deref() {
+        None => Ok(None),
+        Some([registry]) => Ok(Some(registry.clone())),
+        Some(registries) => Err(AdapterError::new(
+            file,
+            format!(
+                "crate `{}` names the registries {} in `publish`, so it is unclear which one \
+                 releases it; name one",
+                package.name,
+                registries
+                    .iter()
+                    .map(|registry| format!("`{registry}`"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        )),
+    }
+}
+
+fn describe_registry(registry: Option<&str>) -> String {
+    match registry {
+        Some(registry) => format!("the Cargo registry `{registry}`"),
+        None => "the default Cargo registry".to_string(),
+    }
+}
+
+/// Whether cargo's message says the registry holds the version already.
+fn already_published(message: &str) -> bool {
+    message.contains("already exists") || message.contains("already uploaded")
 }
 
 /// The first cargo that packages the selected crates of a workspace
@@ -984,6 +1052,7 @@ mod tests {
             reference: String::new(),
             range: range.map(str::to_string),
             follows: false,
+            published_first: range.is_some(),
             location: Location::new(format!("crates/{dependent}/Cargo.toml"), &["dependencies"]),
         };
         let both = [unit("a"), unit("b")];
@@ -1159,23 +1228,28 @@ mod tests {
             .iter()
             .map(|edge| {
                 format!(
-                    "{} ({:?}) -> {} {}: {:?} at {}",
+                    "{} ({:?}) -> {} {}: {:?}{} at {}",
                     edge.dependent_path,
                     edge.dependent_unit,
                     edge.dependency,
                     edge.kind,
                     edge.range,
+                    if edge.published_first {
+                        ", published first"
+                    } else {
+                        ""
+                    },
                     edge.location
                 )
             })
             .collect();
         expect_test::expect![[r#"
             [
-                "crates/api (Some(\"api\")) -> core optional: Some(\"1.2\") at Cargo.toml `workspace.dependencies.core.version`",
-                "crates/api (Some(\"api\")) -> core build: Some(\"^1.2.0\") at crates/api/Cargo.toml `build-dependencies.build-core.version`",
+                "crates/api (Some(\"api\")) -> core optional: Some(\"1.2\"), published first at Cargo.toml `workspace.dependencies.core.version`",
+                "crates/api (Some(\"api\")) -> core build: Some(\"^1.2.0\"), published first at crates/api/Cargo.toml `build-dependencies.build-core.version`",
                 "crates/api (Some(\"api\")) -> core development: None at crates/api/Cargo.toml `dev-dependencies.core.version`",
-                "crates/api (Some(\"api\")) -> core runtime: Some(\">=1.0, <2.0\") at crates/api/Cargo.toml `target.cfg(unix).dependencies.core.version`",
-                "crates/tool (None) -> core runtime: Some(\"~1.2\") at crates/tool/Cargo.toml `dependencies.core.version`",
+                "crates/api (Some(\"api\")) -> core runtime: Some(\">=1.0, <2.0\"), published first at crates/api/Cargo.toml `target.cfg(unix).dependencies.core.version`",
+                "crates/tool (None) -> core runtime: Some(\"~1.2\"), published first at crates/tool/Cargo.toml `dependencies.core.version`",
             ]
         "#]].assert_debug_eq(&edges);
     }

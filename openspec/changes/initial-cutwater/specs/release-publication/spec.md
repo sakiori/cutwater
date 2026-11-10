@@ -33,12 +33,23 @@ In a pipeline of any other commit, `publish` SHALL publish and tag nothing for a
 A repeated `publish` SHALL publish only what is still missing and tag only what is complete. A registry's answer that the version already exists SHALL count as published once the registry lists it. After publishing, the tool SHALL wait, for a configurable time, for the registry to list the version before it counts the unit as published. It SHALL never replace or unpublish a version.
 
 #### Scenario: Retry after the first unit
-- **WHEN** `publish` published `core` and failed on `api`, and its job is retried
-- **THEN** it does not publish `core` again, publishes `api`, and then tags both
+- **WHEN** `publish` published and tagged `core` and failed on `api`, and its job is retried
+- **THEN** it does not publish `core` again, publishes `api`, and then tags it
 
 #### Scenario: Slow registry
 - **WHEN** the registry accepts `core` 2.0.0 but lists it only some seconds later
 - **THEN** `publish` waits for it to appear before tagging, and fails after the configured time if it never does
+
+### Requirement: Failed publication
+A unit whose publication fails SHALL not stop the publication of units that do not depend on it. A unit SHALL not be published, and the run SHALL fail, while a unit it depends on through an edge that orders publication lacks its released version in its registry: because its publication failed in that run, or because an earlier release of it is missing, whether or not that release's pipeline has finished.
+
+#### Scenario: Dependency failed
+- **WHEN** `api` depends on `core` and publishing `core` fails
+- **THEN** `publish` does not publish `api` in that run and fails
+
+#### Scenario: Dependency of an earlier release missing
+- **WHEN** `core` 2.0.0, released by commit R, is missing from its registry, and the pipeline of a later release commit that releases `api`, which depends on `core`, runs `publish`
+- **THEN** `publish` neither publishes nor tags `api`, fails, and says to retry once R's pipeline published `core`, whether R's pipeline has finished or still runs
 
 ### Requirement: Tags and Releases
 After a unit is published, `publish` SHALL tag the release commit from the unit's tag template and create its GitLab Release, with the version's changelog entry as notes. A fixed group SHALL get one tag and one Release once all its members are published, with every member's entry in the notes, and none while any member is unpublished.
@@ -76,7 +87,7 @@ A unit's registry name SHALL be its name with characters the generic package reg
 - **THEN** its output names `api`, 1.4.3, the registry and the tag `api-v1.4.3`
 
 ### Requirement: Forge access for publication
-`publish` SHALL create tags and Releases with the bot token, so that the right to create protected release tags does not depend on who merged. Before publishing anything, it SHALL check that the bot may create every tag it is about to create, and SHALL fail naming the tag and the protection rule when it may not.
+`publish` SHALL create tags and Releases with the bot token, so that the right to create protected release tags does not depend on who merged. Before publishing anything, it SHALL check that the bot may create every tag it is about to create or to give a Release, since GitLab requires that right for a Release of a protected tag, and SHALL fail naming the tag and the protection rule when it may not.
 
 #### Scenario: Bot not allowed to create the tag
 - **WHEN** release tags are protected for an access level the bot does not have

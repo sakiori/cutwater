@@ -52,6 +52,12 @@ enum Command {
     /// manifest's versions, and what would be published passes the
     /// adapters' checks; then run the repository checks.
     Goal(GoalArgs),
+    /// Publish the release, in a pipeline of the default branch: in the
+    /// pipeline of a unit's release commit, publish what its registry lacks
+    /// in dependency order, upload its release assets, then tag the release
+    /// commit and create the GitLab release; in later pipelines, check that
+    /// earlier releases were published.
+    Publish(PublishArgs),
 }
 
 #[derive(Debug, Args)]
@@ -99,6 +105,18 @@ pub struct GoalArgs {
     /// HEAD. Default: as for `check`, from GitLab's CI variables.
     #[arg(long, value_name = "COMMIT")]
     pub base: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct PublishArgs {
+    /// Say what would be published, uploaded and tagged, and write nothing
+    /// to any registry or to GitLab.
+    #[arg(long)]
+    pub dry_run: bool,
+    /// Print the record of the run as JSON on standard output: what was
+    /// published, uploaded and tagged, and what was found present.
+    #[arg(long)]
+    pub json: bool,
 }
 
 #[derive(Debug, Args)]
@@ -165,6 +183,7 @@ pub fn main() -> ExitCode {
         Command::Pre(command) => commands::pre::run(&command),
         Command::Mr(args) => commands::mr::run(&args),
         Command::Goal(args) => commands::goal::run(&args),
+        Command::Publish(args) => commands::publish::run(&args),
     };
     match result {
         Ok(code) => code,

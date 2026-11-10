@@ -27,7 +27,7 @@
       "default": "main"
     },
     "gitlab": {
-      "description": "How `mr` reaches GitLab.",
+      "description": "How `mr` and `publish` reach GitLab.",
       "$ref": "#/$defs/GitLabSettings",
       "default": {
         "merge-queue": [],
@@ -49,6 +49,13 @@
         "discover": false,
         "exclude": [],
         "tag": null
+      }
+    },
+    "publish": {
+      "description": "How `publish` publishes.",
+      "$ref": "#/$defs/PublishSettings",
+      "default": {
+        "registry-timeout": 600
       }
     },
     "release-branch": {
@@ -160,7 +167,7 @@
       ]
     },
     "GitLabSettings": {
-      "description": "How `mr` reaches GitLab. The instance and the project are those of the\npipeline, from `CI_SERVER_URL` and `CI_PROJECT_ID`.",
+      "description": "How `mr` and `publish` reach GitLab. The instance and the project are\nthose of the pipeline, from `CI_SERVER_URL` and `CI_PROJECT_ID`.",
       "type": "object",
       "properties": {
         "merge-queue": {
@@ -208,6 +215,20 @@
         "units"
       ]
     },
+    "PublishSettings": {
+      "description": "How `publish` publishes.",
+      "type": "object",
+      "properties": {
+        "registry-timeout": {
+          "description": "How many seconds `publish` waits, after publishing a version, for its\nregistry to list it before it counts the version as published and\ntags it; it fails when the registry still does not list it then.",
+          "type": "integer",
+          "format": "uint64",
+          "default": 600,
+          "minimum": 1
+        }
+      },
+      "additionalProperties": false
+    },
     "UnitSettings": {
       "description": "A unit: what is versioned and released as one.",
       "type": "object",
@@ -223,12 +244,29 @@
             }
           ]
         },
+        "assets": {
+          "description": "Patterns of the release assets, relative to the repository root, in\nglob syntax: files that CI builds before `publish`, which uploads\nthem to the project's generic package registry and links them from\nthe release. Every pattern must match a file.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
         "name": {
           "description": "The unit's name, unique in the repository: for a discovered unit, its\npackage's name.",
           "type": "string"
         },
         "path": {
           "description": "The unit's directory, relative to the repository root.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "registry-name": {
+          "description": "The package name of the unit's release assets in the generic package\nregistry, of letters, digits, `.`, `_`, `-` and `+`. Default: the\nunit's name with every other character replaced by `-`.",
           "type": [
             "string",
             "null"

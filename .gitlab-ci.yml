@@ -2,7 +2,8 @@
 #
 # - A merge request pipeline checks the change: formatting, Clippy, the
 #   tests, which also run npm, pnpm and cargo, with the image's git and with
-#   the oldest supported git, the minimum supported Rust version,
+#   the oldest supported git, publication to local npm and Cargo
+#   registries, the minimum supported Rust version,
 #   cargo-deny, the crate's package, the pipeline's scripts and the OpenSpec
 #   specification. A pipeline started by hand runs the same checks.
 # - A push to the default branch checks the OpenSpec specification.
@@ -10,8 +11,8 @@
 #   advisory fails without a change.
 #
 # The images are pinned by digest, the tools by version and checksum in
-# .gitlab/scripts/install-tools.sh, and the OpenSpec CLI with its
-# dependencies in .gitlab/openspec. Every job runs on the group's x86_64
+# .gitlab/scripts/install-tools.sh, and the OpenSpec CLI and Verdaccio with
+# their dependencies in .gitlab/openspec and .gitlab/verdaccio. Every job runs on the group's x86_64
 # Linux runner, tagged sakiori-oss-linux.
 
 workflow:
@@ -82,6 +83,21 @@ test:
   script:
     - git --version
     - cargo test --locked
+
+# The tests that publish to real registries on the runner: Verdaccio, pinned
+# with its dependency tree by .gitlab/verdaccio/package-lock.json, and
+# cargo-http-registry, pinned by install-tools.sh. Neither reaches any other
+# registry.
+test-registries:
+  extends:
+    - .check
+    - .ecosystem-tools
+  script:
+    - .gitlab/scripts/install-tools.sh "$TOOLS" cargo-http-registry
+    - npm ci --prefix .gitlab/verdaccio --ignore-scripts --no-audit --no-fund
+    - export CUTWATER_TEST_VERDACCIO="$CI_PROJECT_DIR/.gitlab/verdaccio/node_modules/.bin/verdaccio"
+    - export CUTWATER_TEST_CARGO_HTTP_REGISTRY="$TOOLS/bin/cargo-http-registry"
+    - cargo test --locked --test registries -- --ignored
 
 # The tests against the oldest git the README supports, built from source.
 test-git:

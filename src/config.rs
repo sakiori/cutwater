@@ -29,9 +29,12 @@ pub struct Config {
     /// commit.
     #[serde(default = "release_title")]
     pub release_title: String,
-    /// How `mr` reaches GitLab.
+    /// How `mr` and `publish` reach GitLab.
     #[serde(default)]
     pub gitlab: GitLabSettings,
+    /// How `publish` publishes.
+    #[serde(default)]
+    pub publish: PublishSettings,
     /// The npm adapter's settings. Its discovery finds the packages of a
     /// pnpm workspace (`pnpm-workspace.yaml`), an npm workspace
     /// (`workspaces` in `package.json`) or a single `package.json`, at the
@@ -81,8 +84,8 @@ pub const DEFAULT_TOKEN_VARIABLE: &str = "CUTWATER_GITLAB_TOKEN";
 /// made with it start no pipelines.
 pub const JOB_TOKEN_VARIABLE: &str = "CI_JOB_TOKEN";
 
-/// How `mr` reaches GitLab. The instance and the project are those of the
-/// pipeline, from `CI_SERVER_URL` and `CI_PROJECT_ID`.
+/// How `mr` and `publish` reach GitLab. The instance and the project are
+/// those of the pipeline, from `CI_SERVER_URL` and `CI_PROJECT_ID`.
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
 pub struct GitLabSettings {
@@ -108,6 +111,30 @@ impl Default for GitLabSettings {
 
 fn token_variable() -> String {
     DEFAULT_TOKEN_VARIABLE.to_string()
+}
+
+/// How `publish` publishes.
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+pub struct PublishSettings {
+    /// How many seconds `publish` waits, after publishing a version, for its
+    /// registry to list it before it counts the version as published and
+    /// tags it; it fails when the registry still does not list it then.
+    #[serde(default = "registry_timeout")]
+    #[schemars(range(min = 1))]
+    pub registry_timeout: u64,
+}
+
+impl Default for PublishSettings {
+    fn default() -> Self {
+        Self {
+            registry_timeout: registry_timeout(),
+        }
+    }
+}
+
+fn registry_timeout() -> u64 {
+    600
 }
 
 /// A repository check: a command that a step runs after its own checks.
@@ -177,6 +204,15 @@ pub struct UnitSettings {
     /// `{unit}` and `{version}`. Default: the `tag` of the unit's adapter. A
     /// member of a fixed group takes the group's tags and sets none.
     pub tag: Option<String>,
+    /// Patterns of the release assets, relative to the repository root, in
+    /// glob syntax: files that CI builds before `publish`, which uploads
+    /// them to the project's generic package registry and links them from
+    /// the release. Every pattern must match a file.
+    pub assets: Option<Vec<String>>,
+    /// The package name of the unit's release assets in the generic package
+    /// registry, of letters, digits, `.`, `_`, `-` and `+`. Default: the
+    /// unit's name with every other character replaced by `-`.
+    pub registry_name: Option<String>,
 }
 
 /// A fixed group: two or more units that always share one version.
@@ -279,6 +315,12 @@ impl Config {
                      name `check`, `goal` or both"
                 );
             }
+        }
+        if config.publish.registry_timeout == 0 {
+            bail!(
+                "{CONFIG_FILE}: `publish.registry-timeout` is 0; give the registry at least one \
+                 second to list a published version"
+            );
         }
         if config.default_branch == config.release_branch {
             bail!(

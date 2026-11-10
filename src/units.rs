@@ -27,6 +27,12 @@ pub struct Unit {
     /// The template of the unit's own tags; `None` for a member of a fixed
     /// group, which takes the group's.
     pub tag: Option<TagTemplate>,
+    /// The package name of the unit's release assets in the generic package
+    /// registry.
+    pub registry_name: String,
+    /// The patterns of the unit's release assets, relative to the
+    /// repository root.
+    pub assets: Vec<String>,
 }
 
 /// The shipped-file patterns of a unit, gitignore-style: a pattern applies
@@ -268,12 +274,36 @@ impl Units {
                     continue;
                 }
             };
+            let registry_name = match settings.and_then(|s| s.registry_name.as_deref()) {
+                Some(set) if is_registry_name(set) => set.to_string(),
+                Some(set) => {
+                    problems.push(format!(
+                        "{CONFIG_FILE}: the `registry-name` of unit `{name}` is `{set}`, but the \
+                         generic package registry accepts only letters, digits, `.`, `_`, `-` \
+                         and `+`"
+                    ));
+                    continue;
+                }
+                None => registry_name(name),
+            };
+            let assets = settings.and_then(|s| s.assets.clone()).unwrap_or_default();
+            if let Some(problem) = assets
+                .iter()
+                .find_map(|pattern| asset_pattern_problem(pattern))
+            {
+                problems.push(format!(
+                    "{CONFIG_FILE}: the `assets` patterns of unit `{name}`: {problem}"
+                ));
+                continue;
+            }
             units.push(Unit {
                 name: name.clone(),
                 path: candidate.path.clone(),
                 adapter: candidate.adapter,
                 shipped,
                 tag,
+                registry_name,
+                assets,
             });
         }
         let paths: Vec<String> = units.iter().map(|unit| unit.path.clone()).collect();
@@ -284,6 +314,7 @@ impl Units {
                 .collect();
         }
         check_tags(&units, &groups, &mut problems);
+        check_registry_names(&units, &mut problems);
 
         if !problems.is_empty() {
             bail!("{}", problems.join("\n"));
@@ -440,6 +471,53 @@ fn check_tags(units: &[Unit], groups: &[Group], problems: &mut Vec<String>) {
             ));
         } else {
             seen.insert(tag, owner);
+        }
+    }
+}
+
+/// Whether the generic package registry accepts `name` as a package name.
+fn is_registry_name(name: &str) -> bool {
+    !name.is_empty() && name.chars().all(registry_name_char) && !name.chars().all(|c| c == '.')
+}
+
+fn registry_name_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '+')
+}
+
+/// The default registry name of a unit: its name with every character the
+/// generic package registry rejects replaced by `-`.
+pub fn registry_name(unit: &str) -> String {
+    unit.chars()
+        .map(|c| if registry_name_char(c) { c } else { '-' })
+        .collect()
+}
+
+/// What is wrong with an asset pattern, `None` when it is a glob relative
+/// to the repository root.
+fn asset_pattern_problem(pattern: &str) -> Option<String> {
+    if pattern.starts_with('/') || pattern.split('/').any(|part| part == "..") {
+        return Some(format!(
+            "`{pattern}` leaves the repository; give it relative to the repository root"
+        ));
+    }
+    globset::Glob::new(pattern)
+        .err()
+        .map(|err| format!("`{pattern}`: {err}"))
+}
+
+/// No two units may share a registry name, as their assets would mix.
+fn check_registry_names(units: &[Unit], problems: &mut Vec<String>) {
+    let mut seen: HashMap<&str, &str> = HashMap::new();
+    for unit in units {
+        match seen.get(unit.registry_name.as_str()) {
+            Some(first) => problems.push(format!(
+                "{CONFIG_FILE}: units `{first}` and `{}` both have the registry name `{}` in the \
+                 generic package registry; set `registry-name` on one of them",
+                unit.name, unit.registry_name
+            )),
+            None => {
+                seen.insert(&unit.registry_name, &unit.name);
+            }
         }
     }
 }
@@ -825,6 +903,36 @@ mod tests {
         );
         assert!(
             message.contains("two units are named `a`: `a` (line 2) and `b` (line 6)"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn colliding_registry_names_are_refused() {
+        let root = repo(&["b-c", "c", "d"]);
+        let units = "[[unit]]\nname = \"@a/b-c\"\npath = \"b-c\"\nadapter = \"npm\"\n\
+                     [[unit]]\nname = \"@a-b/c\"\npath = \"c\"\nadapter = \"npm\"\n";
+        let message = error(root.path(), units);
+        assert!(
+            message.contains(
+                "units `@a-b/c` and `@a/b-c` both have the registry name `-a-b-c` in the generic \
+                 package registry"
+            ),
+            "{message}"
+        );
+        let renamed = resolve(
+            root.path(),
+            &units.replace("path = \"c\"\n", "path = \"c\"\nregistry-name = \"ab-c\"\n"),
+        )
+        .unwrap();
+        assert_eq!(renamed.get("@a/b-c").unwrap().registry_name, "-a-b-c");
+        assert_eq!(renamed.get("@a-b/c").unwrap().registry_name, "ab-c");
+        let message = error(
+            root.path(),
+            "[[unit]]\nname = \"d\"\npath = \"d\"\nadapter = \"npm\"\nregistry-name = \"d/e\"\n",
+        );
+        assert!(
+            message.contains("`registry-name` of unit `d` is `d/e`"),
             "{message}"
         );
     }

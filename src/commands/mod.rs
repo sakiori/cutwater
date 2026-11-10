@@ -7,6 +7,7 @@ pub mod goal;
 pub mod init;
 pub mod mr;
 pub mod pre;
+pub mod publish;
 pub mod status;
 pub mod version;
 
@@ -24,6 +25,30 @@ use crate::manifest::Manifest;
 use crate::plan::{self, Plan};
 use crate::prerelease::PreState;
 use crate::units::Units;
+
+/// The variables GitLab CI sets for the branch of a branch pipeline.
+const COMMIT_BRANCH_VARIABLE: &str = "CI_COMMIT_BRANCH";
+const GITLAB_CI_VARIABLE: &str = "GITLAB_CI";
+
+/// Refuses to run `command` in a GitLab CI pipeline of anything but the
+/// default branch.
+pub fn check_pipeline(command: &str, default_branch: &str) -> Result<()> {
+    let variable = |name: &str| std::env::var(name).ok().filter(|value| !value.is_empty());
+    if variable(GITLAB_CI_VARIABLE).is_none() {
+        return Ok(());
+    }
+    match variable(COMMIT_BRANCH_VARIABLE) {
+        Some(branch) if branch == default_branch => Ok(()),
+        Some(branch) => anyhow::bail!(
+            "`{command}` runs in pipelines of the default branch `{default_branch}`, but this \
+             pipeline is of `{branch}`"
+        ),
+        None => anyhow::bail!(
+            "`{command}` runs in pipelines of the default branch `{default_branch}`, but this \
+             pipeline is not a branch pipeline"
+        ),
+    }
+}
 
 /// The repository the tool runs in, with its configuration and units.
 pub struct Repository {

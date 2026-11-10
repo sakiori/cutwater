@@ -611,9 +611,18 @@ pub fn plannable(
                 )
             })
             .collect();
+        let advice = if cycle.iter().any(|edge| edge.published_first) {
+            "Remove one of these dependencies. A fixed group does not help, because the \
+             ecosystem's tool publishes its members one at a time too: cargo publishes a crate \
+             only once the registry holds every dependency that names a version, development \
+             dependencies included. Dropping the version of a development dependency leaves it \
+             out."
+        } else {
+            "Remove one of these dependencies, or make the units a fixed group."
+        };
         anyhow::anyhow!(
             "the units depend on each other in a cycle, so no order of publication exists:\n{}\n\
-             Remove one of these dependencies, or make the units a fixed group.",
+             {advice}",
             edges.join("\n")
         )
     })?;
@@ -866,11 +875,19 @@ mod tests {
                 reference: range.to_string(),
                 range: Some(range.to_string()),
                 follows: false,
+                published_first: false,
                 location: Location {
                     file: format!("{dependent}/package.json"),
                     keys: vec![kind.to_string(), dependency.to_string()],
                 },
             });
+            self
+        }
+
+        /// The ecosystem's tool needs the last edge's dependency published
+        /// first.
+        fn published_first(mut self) -> Self {
+            self.edges.last_mut().unwrap().published_first = true;
             self
         }
 
@@ -1138,6 +1155,35 @@ mod tests {
         assert!(
             message
                 .contains("  a -> b (runtime, a/package.json)\n  b -> a (runtime, b/package.json)"),
+            "{message}"
+        );
+        assert!(
+            message.contains("or make the units a fixed group"),
+            "{message}"
+        );
+        // A fixed group does not break a cycle the ecosystem's tool needs
+        // published in order.
+        let message = format!(
+            "{:#}",
+            fixture(
+                &[("core", "1.0.0", "1.0.0"), ("testkit", "1.0.0", "1.0.0")],
+                &[&["core", "testkit"]]
+            )
+            .edge("core", "testkit", EdgeKind::Development, "1.0.0")
+            .published_first()
+            .edge("testkit", "core", EdgeKind::Runtime, "1.0.0")
+            .published_first()
+            .plan()
+            .unwrap_err()
+        );
+        assert!(
+            message.contains("core -> testkit (development")
+                && message.contains("testkit -> core (runtime"),
+            "{message}"
+        );
+        assert!(message.contains("A fixed group does not help"), "{message}");
+        assert!(
+            !message.contains("make the units a fixed group"),
             "{message}"
         );
     }

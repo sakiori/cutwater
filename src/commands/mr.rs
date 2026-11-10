@@ -18,41 +18,18 @@ use super::version;
 use crate::changelog;
 use crate::cli::MrArgs;
 use crate::config::Config;
-use crate::forge::gitlab::{Connection, GitLab};
+use crate::forge::gitlab::{BotCommand, Connection, GitLab};
 use crate::forge::{FileAction, FileChange, Forge, MergeRequest, MergeSettings, NewCommit};
 use crate::git::Git;
 use crate::plan::Plan;
-
-/// The variables GitLab CI sets for the branch of a branch pipeline.
-const COMMIT_BRANCH_VARIABLE: &str = "CI_COMMIT_BRANCH";
-const GITLAB_CI_VARIABLE: &str = "GITLAB_CI";
 
 pub fn run(args: &MrArgs) -> Result<ExitCode> {
     let cwd = std::env::current_dir().context("cannot read the current directory")?;
     let git = Git::discover(&cwd)?;
     let config = Config::load(git.root())?;
-    check_pipeline(&config.default_branch)?;
-    let forge = GitLab::connect(Connection::from_env(&config.gitlab)?)?;
+    super::check_pipeline("mr", &config.default_branch)?;
+    let forge = GitLab::connect(Connection::from_env(&config.gitlab, BotCommand::Mr)?)?;
     release(&git, &config.default_branch, &forge, args.dry_run)
-}
-
-/// Refuses a GitLab CI pipeline of anything but the default branch.
-fn check_pipeline(default_branch: &str) -> Result<()> {
-    let variable = |name: &str| std::env::var(name).ok().filter(|value| !value.is_empty());
-    if variable(GITLAB_CI_VARIABLE).is_none() {
-        return Ok(());
-    }
-    match variable(COMMIT_BRANCH_VARIABLE) {
-        Some(branch) if branch == default_branch => Ok(()),
-        Some(branch) => bail!(
-            "`mr` runs in pipelines of the default branch `{default_branch}`, but this pipeline \
-             is of `{branch}`"
-        ),
-        None => bail!(
-            "`mr` runs in pipelines of the default branch `{default_branch}`, but this pipeline \
-             is not a branch pipeline"
-        ),
-    }
 }
 
 /// Brings the release merge request up to date with the default branch's

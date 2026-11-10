@@ -3,3 +3,4 @@
 /.tools
 /.git-build
 /.gitlab/openspec/node_modules
+/.gitlab/verdaccio/node_modules
