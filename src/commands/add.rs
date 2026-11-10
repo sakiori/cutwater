@@ -45,7 +45,7 @@ pub fn run(args: &AddArgs) -> Result<ExitCode> {
         );
     };
     let file = changeset::create(repo.git.root(), &releases, &entry)?;
-    println!("Created {file}");
+    crate::outln!("Created {file}")?;
     Ok(ExitCode::SUCCESS)
 }
 

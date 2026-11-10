@@ -25,12 +25,21 @@ fn workspace() -> Repo {
         &[
             ("package.json", r#"{"name": "acme", "private": true}"#),
             ("pnpm-workspace.yaml", "packages:\n  - packages/*\n"),
-            ("packages/api/package.json", r#"{"name": "@acme/api"}"#),
+            (
+                "packages/api/package.json",
+                r#"{"name": "@acme/api", "version": "1.4.2"}"#,
+            ),
             ("packages/api/src/index.ts", "export {};\n"),
             ("packages/api/README.md", "# api\n"),
-            ("packages/web/package.json", r#"{"name": "@acme/web"}"#),
+            (
+                "packages/web/package.json",
+                r#"{"name": "@acme/web", "version": "2.1.0"}"#,
+            ),
             ("packages/web/index.ts", "export {};\n"),
-            ("packages/ui/package.json", r#"{"name": "@acme/ui"}"#),
+            (
+                "packages/ui/package.json",
+                r#"{"name": "@acme/ui", "version": "2.1.0"}"#,
+            ),
             ("packages/ui/index.ts", "export {};\n"),
             (
                 "packages/scripts/package.json",
@@ -559,4 +568,145 @@ fn diff_base_without_a_merge_base() {
         .assert()
         .code(2)
         .stderr(contains("does not connect").and(contains("Raise the clone depth")));
+}
+
+#[test]
+fn version_edited_by_hand_disagrees_with_the_manifest() {
+    let repo = workspace();
+    repo.git(&["checkout", "--quiet", "main"]);
+    repo.write(
+        ".cutwater/versions.toml",
+        "[units]\n\"@acme/api\" = \"1.4.2\"\n\"@acme/ui\" = { version = \"2.1.0\", seeded = true }\n",
+    );
+    repo.commit("record the released versions");
+    repo.git(&["checkout", "--quiet", "-B", "feature"]);
+    repo.write(
+        "packages/api/package.json",
+        r#"{"name": "@acme/api", "version": "1.5.0"}"#,
+    );
+    repo.write(
+        "packages/web/package.json",
+        r#"{"name": "@acme/web", "version": "2.2.0"}"#,
+    );
+    repo.write(
+        ".changeset/bump.md",
+        &changeset(&[("@acme/api", "minor"), ("@acme/web", "minor")], "Bump."),
+    );
+    repo.commit("bump the versions by hand");
+    let disagreement = "  @acme/api: .cutwater/versions.toml has 1.4.2, \
+                        packages/api/package.json `version` has 1.5.0\n";
+    repo.cutwater()
+        .args(["check", "--base", "main"])
+        .assert()
+        .code(1)
+        .stderr(contains(disagreement))
+        // A unit without a manifest entry is new.
+        .stderr(contains("@acme/web:").not())
+        .stdout(contains("@acme/api: .changeset/bump.md"));
+    // The release merge request is checked the same way.
+    repo.git(&["checkout", "--quiet", "-b", "cutwater/release"]);
+    check_as_merge_request(&repo, "7", "7", "7")
+        .code(1)
+        .stderr(contains(disagreement));
+}
+
+const MANIFEST: &str =
+    "[units]\n\"@acme/api\" = \"1.4.2\"\n\"@acme/ui\" = \"2.1.0\"\n\"@acme/web\" = \"2.1.0\"\n";
+
+#[test]
+fn creating_the_manifest_passes_and_changing_it_fails() {
+    let repo = workspace();
+    repo.write(".cutwater/versions.toml", MANIFEST);
+    repo.commit("adopt cutwater");
+    repo.cutwater()
+        .args(["check", "--base", "main"])
+        .assert()
+        .success();
+    repo.git(&["checkout", "--quiet", "main"]);
+    repo.git(&["merge", "--quiet", "--ff-only", "feature"]);
+    repo.git(&["checkout", "--quiet", "-B", "feature"]);
+    repo.write(
+        ".cutwater/versions.toml",
+        &MANIFEST.replace("1.4.2", "1.4.3"),
+    );
+    repo.write(
+        "packages/api/package.json",
+        r#"{"name": "@acme/api", "version": "1.4.3"}"#,
+    );
+    repo.commit("release by hand");
+    repo.cutwater()
+        .args(["check", "--base", "main"])
+        .assert()
+        .code(1)
+        .stderr(contains(
+            "this merge request changes .cutwater/versions.toml, but only `cutwater version` writes it",
+        ));
+}
+
+#[test]
+fn cycle_introduced_by_a_merge_request() {
+    let repo = workspace();
+    repo.write(
+        "packages/api/package.json",
+        r#"{"name": "@acme/api", "version": "1.4.2", "dependencies": {"@acme/web": "^2.1.0"}}"#,
+    );
+    repo.write(
+        "packages/web/package.json",
+        r#"{"name": "@acme/web", "version": "2.1.0", "dependencies": {"@acme/api": "^1.4.2"}}"#,
+    );
+    repo.write(
+        ".changeset/loop.md",
+        &changeset(&[("@acme/api", "patch"), ("@acme/web", "patch")], "Loop."),
+    );
+    repo.commit("depend on each other");
+    repo.cutwater()
+        .args(["check", "--base", "main"])
+        .assert()
+        .code(1)
+        .stderr(contains("this tree cannot be planned"))
+        .stderr(contains(
+            "  @acme/api -> @acme/web (runtime, packages/api/package.json)\n  \
+             @acme/web -> @acme/api (runtime, packages/web/package.json)\n",
+        ));
+}
+
+#[test]
+fn release_merge_request_passes_after_version() {
+    let repo = workspace();
+    repo.git(&["checkout", "--quiet", "main"]);
+    repo.write(".cutwater/versions.toml", MANIFEST);
+    repo.write(
+        ".changeset/brave-lions-dance.md",
+        &changeset(&[("@acme/api", "minor"), ("@acme/ui", "patch")], "Add."),
+    );
+    repo.commit("adopt cutwater, with a pending changeset");
+    repo.git(&["checkout", "--quiet", "-b", "cutwater/release"]);
+    repo.cutwater().arg("version").assert().success();
+    repo.commit("release");
+    check_as_merge_request(&repo, "7", "7", "7")
+        .success()
+        .stderr("");
+}
+
+#[test]
+fn revert_of_a_release_merge_request_fails() {
+    let repo = workspace();
+    repo.git(&["checkout", "--quiet", "main"]);
+    repo.write(".cutwater/versions.toml", MANIFEST);
+    repo.write(
+        ".changeset/brave-lions-dance.md",
+        &changeset(&[("@acme/api", "minor")], "Add."),
+    );
+    repo.commit("adopt cutwater, with a pending changeset");
+    repo.cutwater().arg("version").assert().success();
+    let release = repo.commit("release");
+    repo.git(&["checkout", "--quiet", "-B", "feature"]);
+    repo.git(&["revert", "--no-edit", &release]);
+    repo.cutwater()
+        .args(["check", "--base", "main"])
+        .assert()
+        .code(1)
+        .stderr(contains(
+            "this merge request changes .cutwater/versions.toml, but only `cutwater version` writes it",
+        ));
 }

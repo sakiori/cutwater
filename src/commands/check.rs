@@ -10,10 +10,13 @@ use std::process::ExitCode;
 use anyhow::{Result, bail};
 
 use super::Repository;
+use crate::adapter::UnitVersion;
 use crate::changes::{self, ChangedFile, Status};
 use crate::changeset::{self, Changeset};
 use crate::cli::CheckArgs;
 use crate::git::Git;
+use crate::manifest::{MANIFEST_FILE, Manifest};
+use crate::plan;
 use crate::units::Units;
 
 /// The merge request's diff base.
@@ -26,14 +29,23 @@ pub fn run(args: &CheckArgs) -> Result<ExitCode> {
     let repo = Repository::open()?;
     let pending = changeset::pending_at(&repo.git, "HEAD")?;
     changeset::validate(&pending, &repo.units)?;
+    let manifest = Manifest::load(repo.git.root())?;
+    let inspected = repo.inspect()?;
+    let disagreements = disagreements(&manifest, &inspected.declared);
+    let mut sound = print_disagreements(&disagreements);
+    // A tree that cannot be planned would stop every later release.
+    if let Err(err) = plan::plannable(&repo.units, &inspected.declared, &inspected.edges) {
+        eprintln!("error: this tree cannot be planned: {err:#}");
+        sound = false;
+    }
 
     if let Some(release) = ReleaseMergeRequest::detect(&repo.config.release_branch) {
-        println!(
+        crate::outln!(
             "This is the release merge request, from the branch `{}` of this project: it needs \
              no changeset.",
             release.branch
-        );
-        return Ok(ExitCode::SUCCESS);
+        )?;
+        return Ok(exit_code(sound));
     }
 
     let base = Base::resolve(&repo.git, args.base.as_deref())?;
@@ -54,13 +66,68 @@ pub fn run(args: &CheckArgs) -> Result<ExitCode> {
         .collect();
     let report = evaluate(&repo.units, &changed, &pending, &before);
 
-    println!("Comparing HEAD with {} ({}).", base.commit, base.origin);
-    print(&report);
-    Ok(if report.passed() {
+    crate::outln!("Comparing HEAD with {} ({}).", base.commit, base.origin)?;
+    print(&report)?;
+    Ok(exit_code(sound && report.passed()))
+}
+
+fn exit_code(passed: bool) -> ExitCode {
+    if passed {
         ExitCode::SUCCESS
     } else {
         ExitCode::from(1)
-    })
+    }
+}
+
+/// A unit whose files declare another version than the manifest holds.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Disagreement {
+    pub unit: String,
+    pub manifest: String,
+    pub declared: String,
+    pub location: String,
+}
+
+/// The units whose files declare another version than the manifest holds;
+/// a unit without a manifest entry is new and declares its first release.
+pub fn disagreements(
+    manifest: &Manifest,
+    declared: &BTreeMap<String, UnitVersion>,
+) -> Vec<Disagreement> {
+    declared
+        .iter()
+        .filter(|(_, declared)| declared.holds_release)
+        .filter_map(|(unit, declared)| {
+            let entry = manifest.get(unit)?;
+            let agrees = semver::Version::parse(&declared.version)
+                .is_ok_and(|version| version == entry.version);
+            (!agrees).then(|| Disagreement {
+                unit: unit.clone(),
+                manifest: entry.version.to_string(),
+                declared: declared.version.clone(),
+                location: declared.location.to_string(),
+            })
+        })
+        .collect()
+}
+
+/// Prints the disagreements; `true` when there is none.
+fn print_disagreements(disagreements: &[Disagreement]) -> bool {
+    if disagreements.is_empty() {
+        return true;
+    }
+    eprintln!("error: these units' files do not hold the version {MANIFEST_FILE} records:");
+    for disagreement in disagreements {
+        eprintln!(
+            "  {}: {MANIFEST_FILE} has {}, {} has {}",
+            disagreement.unit, disagreement.manifest, disagreement.location, disagreement.declared
+        );
+    }
+    eprintln!(
+        "Only `cutwater version` changes released versions; restore the files' versions and \
+         add a changeset for the release instead."
+    );
+    false
 }
 
 /// The verdict of `check` and what it rests on.
@@ -71,11 +138,18 @@ pub struct Report {
     pub corrections: Vec<Correction>,
     /// The units whose shipped files changed, by name.
     pub units: Vec<ChangedUnit>,
+    /// How the merge request changes the existing version manifest, which
+    /// only `version` writes; `None` when it does not, or creates it.
+    pub manifest_change: Option<Status>,
 }
 
 impl Report {
-    pub fn passed(&self) -> bool {
+    pub fn covered(&self) -> bool {
         self.units.iter().all(|unit| unit.covered_by.is_some())
+    }
+
+    pub fn passed(&self) -> bool {
+        self.covered() && self.manifest_change.is_none()
     }
 }
 
@@ -175,14 +249,24 @@ pub fn evaluate(
             })
         })
         .collect();
-    Report { corrections, units }
+    let manifest_change = changed
+        .iter()
+        .find(|file| file.path == MANIFEST_FILE && file.status != Status::Added)
+        .map(|file| file.status);
+    Report {
+        corrections,
+        units,
+        manifest_change,
+    }
 }
 
-fn print(report: &Report) {
+fn print(report: &Report) -> std::io::Result<()> {
     if !report.corrections.is_empty() {
-        println!("This merge request edits or deletes pending changesets of other merge requests:");
+        crate::outln!(
+            "This merge request edits or deletes pending changesets of other merge requests:"
+        )?;
         for correction in &report.corrections {
-            println!("  {}", describe(correction));
+            crate::outln!("  {}", describe(correction))?;
         }
     }
     let covered: Vec<&ChangedUnit> = report
@@ -191,19 +275,31 @@ fn print(report: &Report) {
         .filter(|unit| unit.covered_by.is_some())
         .collect();
     if !covered.is_empty() {
-        println!("Changed units with a changeset:");
+        crate::outln!("Changed units with a changeset:")?;
         for unit in covered {
             if let Some(coverage) = &unit.covered_by {
                 let empty = if coverage.empty { " (empty)" } else { "" };
-                println!("  {}: {}{empty}", unit.name, coverage.file);
+                crate::outln!("  {}: {}{empty}", unit.name, coverage.file)?;
             }
         }
     }
     if report.units.is_empty() {
-        println!("No unit's shipped files changed.");
+        crate::outln!("No unit's shipped files changed.")?;
     }
-    if report.passed() {
-        return;
+    if let Some(status) = report.manifest_change {
+        let what = if status == Status::Deleted {
+            "deletes"
+        } else {
+            "changes"
+        };
+        eprintln!(
+            "error: this merge request {what} {MANIFEST_FILE}, but only `cutwater version` \
+             writes it, in the release merge request; restore it, and add a changeset for a \
+             release instead"
+        );
+    }
+    if report.covered() {
+        return Ok(());
     }
     eprintln!(
         "error: these units' shipped files changed, but no changeset of this merge request \
@@ -219,6 +315,7 @@ fn print(report: &Report) {
         "Add a changeset with `cutwater add`, or with `cutwater add --empty` when the change \
          releases nothing."
     );
+    Ok(())
 }
 
 fn describe(correction: &Correction) -> String {
@@ -367,5 +464,46 @@ impl ReleaseMergeRequest {
         let project = var("CI_PROJECT_ID")?;
         (branch == release_branch && source_project == target_project && target_project == project)
             .then_some(ReleaseMergeRequest { branch })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::adapter::Location;
+
+    #[test]
+    fn disagreements_only_where_files_hold_the_release() {
+        let manifest = Manifest::parse("[units]\napi = \"1.4.2\"\nbilling = \"1.3.0\"\n").unwrap();
+        let declared = |name: &str, version: &str, holds_release: bool| {
+            (
+                name.to_string(),
+                UnitVersion {
+                    name: name.to_string(),
+                    version: version.to_string(),
+                    holds_release,
+                    location: Location {
+                        file: format!("{name}/file"),
+                        keys: vec!["version".to_string()],
+                    },
+                },
+            )
+        };
+        let found = disagreements(
+            &manifest,
+            &BTreeMap::from([
+                declared("api", "1.5.0", true),
+                declared("billing", "1.3.1-SNAPSHOT", false),
+            ]),
+        );
+        assert_eq!(
+            found,
+            [Disagreement {
+                unit: "api".to_string(),
+                manifest: "1.4.2".to_string(),
+                declared: "1.5.0".to_string(),
+                location: "api/file `version`".to_string(),
+            }]
+        );
     }
 }

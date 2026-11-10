@@ -7,6 +7,10 @@ use predicates::str::contains;
 const CONFIG: &str = r#"
 [cargo]
 discover = true
+
+[[group]]
+name = "sdk"
+units = ["api", "core"]
 "#;
 
 fn workspace() -> Repo {

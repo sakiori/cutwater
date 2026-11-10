@@ -16,7 +16,8 @@ use crate::units::Units;
 pub const CHANGESET_DIR: &str = ".changeset";
 
 /// The version bump a changeset asks for.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Bump {
     /// Releases nothing: the unit is named, but needs no release.
     None,
@@ -222,6 +223,41 @@ pub fn pending_at(git: &Git, rev: &str) -> Result<Vec<Changeset>> {
         }
     }
     if !problems.is_empty() {
+        bail!("invalid changesets:\n  {}", problems.join("\n  "));
+    }
+    changesets.sort_by(|a, b| a.file.cmp(&b.file));
+    Ok(changesets)
+}
+
+/// The changesets pending in the working tree of the repository at `root`,
+/// ordered by file. Fails listing every file that is not a valid changeset.
+pub fn pending_in(root: &Path) -> Result<Vec<Changeset>> {
+    let dir = root.join(CHANGESET_DIR);
+    let entries = match std::fs::read_dir(&dir) {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(err) => return Err(err).with_context(|| format!("cannot read {CHANGESET_DIR}/")),
+    };
+    let mut changesets = Vec::new();
+    let mut problems = Vec::new();
+    for entry in entries {
+        let entry = entry.with_context(|| format!("cannot read {CHANGESET_DIR}/"))?;
+        let Some(name) = entry.file_name().to_str().map(str::to_string) else {
+            continue;
+        };
+        let file = format!("{CHANGESET_DIR}/{name}");
+        if !is_changeset_path(&file) || !entry.path().is_file() {
+            continue;
+        }
+        let text =
+            std::fs::read_to_string(entry.path()).with_context(|| format!("cannot read {file}"))?;
+        match Changeset::parse(&file, &text) {
+            Ok(changeset) => changesets.push(changeset),
+            Err(err) => problems.push(err.to_string()),
+        }
+    }
+    if !problems.is_empty() {
+        problems.sort();
         bail!("invalid changesets:\n  {}", problems.join("\n  "));
     }
     changesets.sort_by(|a, b| a.file.cmp(&b.file));

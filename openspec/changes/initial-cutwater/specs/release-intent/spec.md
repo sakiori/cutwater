@@ -33,11 +33,15 @@ Units SHALL be either listed in the configuration or discovered by their adapter
 - **THEN** the repository has three npm units, named after their packages, and the private package is not a unit
 
 ### Requirement: Tag templates
-A unit's tag template SHALL default to `v{version}` when the repository has one unit and to `{unit}-v{version}` otherwise. A fixed group SHALL have its own tag template, `{group}-v{version}` by default, and its members SHALL take no tags of their own.
+A unit's tag template SHALL default to `v{version}` when the repository has one unit and to `{unit}-v{version}` otherwise. A fixed group SHALL have its own tag template, by default `v{version}` when it holds every unit of the repository and `{group}-v{version}` otherwise, and its members SHALL take no tags of their own.
 
 #### Scenario: Several units
 - **WHEN** a repository has the units `core` and `api` and neither sets a tag template
 - **THEN** the release of `api` 1.4.3 is tagged `api-v1.4.3`
+
+#### Scenario: One group of every unit
+- **WHEN** the crates `core` and `api` are the repository's only units and form the fixed group `crates` without a tag template
+- **THEN** the group's release 2.0.0 is tagged `v2.0.0`
 
 ### Requirement: Fixed groups
 A fixed group SHALL name two or more units that always share one version. A unit SHALL belong to at most one fixed group.
@@ -47,15 +51,41 @@ A fixed group SHALL name two or more units that always share one version. A unit
 - **THEN** every command refuses and names the unit and both groups
 
 ### Requirement: Adoption
-`init` SHALL create `.cutwater/config.toml` and seed the version manifest with each discovered unit's released version, marked as seeded. It SHALL import the `fixed` and `ignore` settings of a Changesets `.changeset/config.json` and keep Changesets' tag format, `v{version}` for a single package and `{unit}@{version}` otherwise, and it SHALL refuse while that file declares `linked` groups or `.changeset/pre.json` or `.changeset/pre/` exists, naming what to resolve first.
+`init` SHALL create `.cutwater/config.toml` and seed the version manifest with each discovered unit's released version, marked as seeded. It SHALL import the `fixed`, `ignore` and `baseBranch` settings of a Changesets `.changeset/config.json`, and name every other setting it does not carry over. It SHALL refuse while that file declares `linked` groups or `.changeset/pre.json` or `.changeset/pre/` exists, naming what to resolve first.
 
 #### Scenario: Repository on Changesets
 - **WHEN** `init` runs in a pnpm workspace whose `.changeset/config.json` declares one fixed group and two pending changesets exist
 - **THEN** the configuration holds that fixed group and the `{unit}@{version}` tag format, the manifest holds every package's current version marked as seeded, and both changesets stay pending
 
+#### Scenario: Setting not carried over
+- **WHEN** `init` runs while `.changeset/config.json` sets `updateInternalDependencies` to `minor`
+- **THEN** it creates the files and says that `updateInternalDependencies` is not carried over
+
 #### Scenario: Changesets prerelease in progress
 - **WHEN** `init` runs while `.changeset/pre.json` or `.changeset/pre/` exists
 - **THEN** it refuses and says to exit Changesets' prerelease mode first
+
+### Requirement: Tags kept on adoption
+`init` SHALL keep the tag format Changesets used for the npm units: `v{version}` for a repository whose root package has no workspaces, and `{unit}@{version}` for the packages of a workspace. Other units SHALL keep the tool's default tag templates. `init` SHALL write every tag template it relies on into the configuration, so that adding a unit later does not change the tags of existing ones.
+
+#### Scenario: Workspace with one publishable package
+- **WHEN** `init` runs in a pnpm workspace with one publishable package `@acme/core` and one private package
+- **THEN** the release of `@acme/core` 1.2.1 is tagged `@acme/core@1.2.1`
+
+### Requirement: Seeded versions from the registry
+For npm and Cargo units, `init` SHALL ask the unit's registry through the ecosystem's tool. A unit whose declared version it lists SHALL be seeded with that version. Otherwise `init` SHALL refuse, naming the unit, the registry asked and the highest version listed, because an unreachable, replaced or denying registry looks like one without the package. `init --new <unit>` SHALL make a unit new, and `init --published <unit>` SHALL seed its declared version without asking.
+
+#### Scenario: Package never published
+- **WHEN** `init` runs and the registry lists no version of the package `export`
+- **THEN** `init` refuses, names `export` and the registry, and suggests `--new export` if the package was never published
+
+#### Scenario: Yanked declared version
+- **WHEN** the declared version of the crate `core` is yanked, so cargo does not list it, and `init --published core` runs
+- **THEN** the manifest seeds `core` with its declared version
+
+#### Scenario: Declared new
+- **WHEN** `init --new export` runs
+- **THEN** the manifest has no entry for `export`, and its first release publishes the version its `package.json` declares
 
 ### Requirement: Seeded versions
 A seeded manifest entry SHALL count as released: `publish` SHALL neither publish nor tag it, and its next release SHALL replace the mark with an ordinary entry.
@@ -119,7 +149,7 @@ The exemption from the changeset rule SHALL apply only to a merge request whose 
 - **THEN** `check` passes and reports neither the release commit's files nor its changesets
 
 ### Requirement: Pending status
-`status` SHALL list the pending changesets and, for every unit they release, its current version, its next version and the reason: its own changesets, its fixed group, or a dependency whose new version its range does not accept. `status --json` SHALL print the same as JSON.
+`status` SHALL list the pending changesets and, for every unit they release, its current version, its next version and the reason: its own changesets, its fixed group, a dependency whose new version its range does not accept, or the final release that ends prerelease mode. `status --json` SHALL print the same as JSON.
 
 #### Scenario: Release caused by a dependency
 - **WHEN** `core` has a pending major changeset and `api` depends on `core` with a range that excludes the next major

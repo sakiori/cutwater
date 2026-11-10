@@ -14,6 +14,13 @@ The npm adapter SHALL treat each publishable package of a pnpm or npm workspace,
 - **WHEN** `api` depends on `core` through a pnpm catalog entry `^1.0.0` and `core` is released at 2.0.0
 - **THEN** the plan releases `api` with a patch bump, because the range excludes 2.0.0
 
+### Requirement: Other package managers
+The npm adapter SHALL refuse a workspace whose root holds the lockfile of a package manager it does not support, such as `yarn.lock`, `bun.lock` or `bun.lockb`, naming the file.
+
+#### Scenario: Yarn workspace
+- **WHEN** npm discovery runs in a repository whose root holds `yarn.lock`
+- **THEN** every command refuses and names `yarn.lock`
+
 ### Requirement: npm packing and publication
 The npm adapter SHALL pack each unit with the workspace's package manager, so that `workspace:` references become versions, and publish the packed archive. It SHALL ask the registry from the package's `publishConfig.registry`, or the configured default, whether it holds a version, and SHALL refresh the workspace lockfile when versions change.
 
@@ -41,6 +48,13 @@ The Maven adapter SHALL treat a directory whose aggregator POM sets its version 
 #### Scenario: Aggregator with modules
 - **WHEN** `billing/pom.xml` aggregates `billing-api` and `billing-service` and sets its version to `${revision}`
 - **THEN** `billing` is one unit and both modules release with its version
+
+### Requirement: Maven versions
+A Maven unit's `revision` SHALL be a semantic version followed by `-SNAPSHOT`. The adapter SHALL refuse any other value, naming the unit, the POM and the value.
+
+#### Scenario: Two-part version
+- **WHEN** a unit's aggregator POM sets `revision` to `1.0-SNAPSHOT`
+- **THEN** every command refuses and names the unit, its POM and `1.0-SNAPSHOT`
 
 ### Requirement: Maven snapshots on the default branch
 The committed `revision` of a released unit SHALL be a snapshot whose base version is above its released version; `version` SHALL write the next patch snapshot, or in prerelease mode the next final version's snapshot. A dependent SHALL refer to a producer through a version property that `version` keeps equal to the producer's `revision`, so one merge request can change both. `check` SHALL fail when either rule does not hold.

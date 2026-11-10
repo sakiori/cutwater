@@ -1,9 +1,10 @@
 # The pipeline of cutwater on GitLab.com.
 #
 # - A merge request pipeline checks the change: formatting, Clippy, the
-#   tests with the image's git and with the oldest supported git, the minimum
-#   supported Rust version, cargo-deny, the crate's package, the pipeline's
-#   scripts and the OpenSpec specification. A pipeline started by hand runs the same checks.
+#   tests, which also run npm, pnpm and cargo, with the image's git and with
+#   the oldest supported git, the minimum supported Rust version,
+#   cargo-deny, the crate's package, the pipeline's scripts and the OpenSpec
+#   specification. A pipeline started by hand runs the same checks.
 # - A push to the default branch checks the OpenSpec specification.
 # - A schedule of the default branch runs cargo-deny, so that a new RustSec
 #   advisory fails without a change.
@@ -66,15 +67,27 @@ clippy:
     - rustup component add clippy
     - cargo clippy --all-targets --locked -- -D warnings
 
+# The tests run npm, pnpm and cargo, as the tool does for npm and Cargo
+# units.
+.ecosystem-tools:
+  before_script:
+    - .gitlab/scripts/install-tools.sh "$TOOLS" node pnpm
+    - export PATH="$TOOLS/bin:$PATH"
+    - node --version && npm --version && pnpm --version && cargo --version
+
 test:
-  extends: .check
+  extends:
+    - .check
+    - .ecosystem-tools
   script:
     - git --version
     - cargo test --locked
 
 # The tests against the oldest git the README supports, built from source.
 test-git:
-  extends: .check
+  extends:
+    - .check
+    - .ecosystem-tools
   variables:
     GIT_VERSION: 2.15.0
     GIT_SHA256: 107116489f10b758b51af1c5dbdb9a274917b0fb67dc8eaefcdabc7bc3eb3e6a

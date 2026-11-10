@@ -23,17 +23,23 @@ dialoguer = { version = "0.12.0", default-features = false }
 gix-validate = "0.13.1"
 globset = "0.4.21"
 ignore = "0.4.34"
+jsonc-parser = { version = "0.34.0", features = ["cst"] }
+nodejs-semver = "7.0.0"
+petgraph = { version = "0.8.3", default-features = false, features = ["std"] }
 petname = { version = "3.2.0", default-features = false, features = ["default-rng", "default-words"] }
 schemars = "1.2.3"
+semver = { version = "1.0.28", features = ["serde"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde-saphyr = { version = "2.0.0", default-features = false, features = ["deserialize"] }
 serde_json = "1.0.154"
 thiserror = "2.0.21"
+tempfile = "3.27.0"
 toml = "1.1.8"
+toml_edit = "0.25.19"
 walkdir = "2.5.0"
+which = "8.0.6"
 
 [dev-dependencies]
 assert_cmd = "2.2.2"
 expect-test = "1.5.1"
 predicates = "3.1.4"
-tempfile = "3.27.0"

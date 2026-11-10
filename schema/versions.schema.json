@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "cutwater version manifest",
+  "description": "The released version of every unit, in `.cutwater/versions.toml`. Only `cutwater init` and `cutwater version` write it.",
+  "type": "object",
+  "properties": {
+    "units": {
+      "description": "The released version of each unit, by unit name.",
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/UnitEntry"
+      },
+      "default": {}
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "Seeded": {
+      "type": "object",
+      "properties": {
+        "seeded": {
+          "type": "boolean",
+          "const": true
+        },
+        "version": {
+          "description": "The version the unit's files declared.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "seeded"
+      ]
+    },
+    "UnitEntry": {
+      "anyOf": [
+        {
+          "description": "The version the unit's last release published.",
+          "type": "string"
+        },
+        {
+          "description": "A version `init` took from the unit's files when the repository\nadopted cutwater. It counts as released but was never tagged; the\nunit's next release replaces the entry with an ordinary one.",
+          "$ref": "#/$defs/Seeded"
+        }
+      ]
+    }
+  }
+}

@@ -5,11 +5,12 @@
   "type": "object",
   "properties": {
     "cargo": {
-      "description": "The discovery of Cargo crates: the members of the workspace in the\nroot `Cargo.toml`, or the single crate it declares, as `cargo metadata`\nreports them, so cargo must be on the `PATH`.",
-      "$ref": "#/$defs/DiscoverySettings",
+      "description": "The Cargo adapter's settings. Its discovery finds the members of the\nworkspace in the root `Cargo.toml`, or the single crate it declares,\nas `cargo metadata` reports them, so cargo must be on the `PATH`.",
+      "$ref": "#/$defs/AdapterSettings",
       "default": {
         "discover": false,
-        "exclude": []
+        "exclude": [],
+        "tag": null
       }
     },
     "default-branch": {
@@ -26,11 +27,12 @@
       }
     },
     "npm": {
-      "description": "The discovery of npm packages: pnpm workspaces (`pnpm-workspace.yaml`),\nnpm workspaces (`workspaces` in `package.json`) or a single\n`package.json`, at the repository root.",
-      "$ref": "#/$defs/DiscoverySettings",
+      "description": "The npm adapter's settings. Its discovery finds the packages of a\npnpm workspace (`pnpm-workspace.yaml`), an npm workspace\n(`workspaces` in `package.json`) or a single `package.json`, at the\nrepository root.",
+      "$ref": "#/$defs/AdapterSettings",
       "default": {
         "discover": false,
-        "exclude": []
+        "exclude": [],
+        "tag": null
       }
     },
     "release-branch": {
@@ -64,8 +66,8 @@
         }
       ]
     },
-    "DiscoverySettings": {
-      "description": "How an adapter discovers units.",
+    "AdapterSettings": {
+      "description": "How an adapter discovers units, and how its units are tagged.",
       "type": "object",
       "properties": {
         "discover": {
@@ -80,6 +82,13 @@
           "items": {
             "type": "string"
           }
+        },
+        "tag": {
+          "description": "The template of the release tags of the adapter's units that set\nnone of their own, with the placeholders `{unit}` and `{version}`.\nDefault: `v{version}` when the repository has one unit,\n`{unit}-v{version}` otherwise.",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "additionalProperties": false
@@ -93,7 +102,7 @@
           "type": "string"
         },
         "tag": {
-          "description": "The template of the group's release tags, with the placeholders\n`{group}` and `{version}`. Default: `{group}-v{version}`.",
+          "description": "The template of the group's release tags, with the placeholders\n`{group}` and `{version}`. Default: `v{version}` when the group holds\nevery unit of the repository, `{group}-v{version}` otherwise.",
           "type": [
             "string",
             "null"
@@ -150,7 +159,7 @@
           }
         },
         "tag": {
-          "description": "The template of the unit's release tags, with the placeholders\n`{unit}` and `{version}`. Default: `v{version}` when the repository\nhas one unit, `{unit}-v{version}` otherwise. A member of a fixed group\ntakes the group's tags and sets none.",
+          "description": "The template of the unit's release tags, with the placeholders\n`{unit}` and `{version}`. Default: the `tag` of the unit's adapter. A\nmember of a fixed group takes the group's tags and sets none.",
           "type": [
             "string",
             "null"

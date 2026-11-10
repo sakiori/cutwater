@@ -7,7 +7,7 @@
 # download's SHA-256, as its release lists it and as a download shows it.
 #
 # usage: .gitlab/scripts/install-tools.sh <dir> <tool>...
-#   tools: cargo-deny, shellcheck
+#   tools: cargo-deny, shellcheck, node (with npm), pnpm
 set -eu
 
 dir=${1:?usage: install-tools.sh <dir> <tool>...}
@@ -30,6 +30,17 @@ unpack() {
   rm "$archive"
 }
 
+# <url> <sha256> <name>: the whole archive into <dir>/<name>, without its
+# top directory when it has one.
+unpack_all() {
+  archive="$dir/download"
+  fetch "$1" "$2" "$archive"
+  rm -rf "${dir:?}/$3"
+  mkdir -p "$dir/$3"
+  tar -xf "$archive" -C "$dir/$3" --strip-components="${4:-0}"
+  rm "$archive"
+}
+
 for tool in "$@"; do
   case "$tool" in
     cargo-deny)
@@ -43,6 +54,23 @@ for tool in "$@"; do
       unpack "https://github.com/koalaman/shellcheck/releases/download/v$version/shellcheck-v$version.linux.x86_64.tar.xz" \
         8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198 \
         "shellcheck-v$version/shellcheck"
+      ;;
+    node)
+      # The release of the Node.js image in .gitlab-ci.yml.
+      version=24.22.2
+      unpack_all "https://nodejs.org/dist/v$version/node-v$version-linux-x64.tar.xz" \
+        48cc0e21e048790e54c0cf5749c2725005313d652651c40b7a21feb9697aaf75 \
+        node 1
+      for executable in node npm npx; do
+        ln -sf "../node/bin/$executable" "$dir/bin/$executable"
+      done
+      ;;
+    pnpm)
+      version=12.18.0
+      unpack_all "https://github.com/pnpm/pnpm/releases/download/v$version/pnpm-linux-x64.tar.gz" \
+        3726060e236c0db3e7124c0a5af123c840ba0cb76682149b63ea0baf290017c2 \
+        pnpm
+      ln -sf ../pnpm/pnpm "$dir/bin/pnpm"
       ;;
     *)
       echo "unknown tool: $tool" >&2

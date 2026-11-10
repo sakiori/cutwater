@@ -240,17 +240,20 @@ impl Units {
                 }
                 (None, Some(_)) => None,
                 (template, None) => {
-                    let template = template.unwrap_or(if single {
-                        "v{version}"
-                    } else {
-                        "{unit}-v{version}"
-                    });
+                    let adapter = candidate.adapter;
+                    let adapter_tag = config.discovery(adapter).tag.as_deref();
+                    let (template, owner) = match (template, adapter_tag) {
+                        (Some(template), _) => (template, format!("the `tag` of unit `{name}`")),
+                        (None, Some(template)) => {
+                            (template, format!("`{adapter}.tag`, for unit `{name}`"))
+                        }
+                        (None, None) if single => ("v{version}", String::new()),
+                        (None, None) => ("{unit}-v{version}", String::new()),
+                    };
                     match TagTemplate::parse(template, Owner::Unit) {
                         Ok(template) => Some(template),
                         Err(problem) => {
-                            problems.push(format!(
-                                "{CONFIG_FILE}: the `tag` of unit `{name}`: {problem}"
-                            ));
+                            problems.push(format!("{CONFIG_FILE}: {owner}: {problem}"));
                             None
                         }
                     }
@@ -377,7 +380,14 @@ fn resolve_groups(
                 "{CONFIG_FILE}, line {line}: fixed group `{name}` needs two or more units"
             ));
         }
-        let template = settings.tag.as_deref().unwrap_or("{group}-v{version}");
+        // A group of every unit is tagged like a repository's single unit.
+        let every_unit = candidates.keys().all(|name| members.contains(name));
+        let default = if every_unit {
+            "v{version}"
+        } else {
+            "{group}-v{version}"
+        };
+        let template = settings.tag.as_deref().unwrap_or(default);
         match TagTemplate::parse(template, Owner::Group) {
             Ok(tag) => groups.push(Group {
                 name: name.to_string(),
@@ -604,6 +614,40 @@ mod tests {
     }
 
     #[test]
+    fn adapter_tag_template() {
+        let root = repo(&["core", "api", "web"]);
+        let units = resolve(
+            root.path(),
+            &format!(
+                "[npm]\ntag = \"{{unit}}@{{version}}\"\n{CORE_AND_API}\
+                 [[unit]]\nname = \"web\"\npath = \"web\"\nadapter = \"npm\"\ntag = \"web/v{{version}}\"\n"
+            ),
+        )
+        .unwrap();
+        let tag = |name: &str| {
+            units
+                .get(name)
+                .unwrap()
+                .tag
+                .as_ref()
+                .unwrap()
+                .render(name, "1.0.0")
+        };
+        assert_eq!(tag("api"), "api@1.0.0");
+        assert_eq!(tag("core"), "core-v1.0.0");
+        assert_eq!(tag("web"), "web/v1.0.0");
+        let message = error(
+            root.path(),
+            &format!("[cargo]\ntag = \"{{unit}}\"\n{CORE_AND_API}"),
+        );
+        assert!(
+            message.contains("`cargo.tag`, for unit `core`")
+                && message.contains("lacks the `{version}` placeholder"),
+            "{message}"
+        );
+    }
+
+    #[test]
     fn tag_default_with_one_unit() {
         let root = repo(&[]);
         let units = resolve(
@@ -617,17 +661,32 @@ mod tests {
 
     #[test]
     fn fixed_group_takes_the_tags() {
-        let root = repo(&["web", "ui"]);
+        let root = repo(&["web", "ui", "api"]);
         let units = resolve(
             root.path(),
             "[[unit]]\nname = \"web\"\npath = \"web\"\nadapter = \"npm\"\n\
              [[unit]]\nname = \"ui\"\npath = \"ui\"\nadapter = \"npm\"\n\
+             [[unit]]\nname = \"api\"\npath = \"api\"\nadapter = \"npm\"\n\
              [[group]]\nname = \"frontend\"\nunits = [\"web\", \"ui\"]\n",
         )
         .unwrap();
         assert!(units.get("web").unwrap().tag.is_none());
         let group = units.group_of("ui").unwrap();
         assert_eq!(group.tag.render("frontend", "2.2.0"), "frontend-v2.2.0");
+    }
+
+    #[test]
+    fn group_of_every_unit_is_tagged_like_a_single_unit() {
+        let root = repo(&["core", "api"]);
+        let units = resolve(
+            root.path(),
+            "[[unit]]\nname = \"core\"\npath = \"core\"\nadapter = \"cargo\"\n\
+             [[unit]]\nname = \"api\"\npath = \"api\"\nadapter = \"cargo\"\n\
+             [[group]]\nname = \"crates\"\nunits = [\"core\", \"api\"]\n",
+        )
+        .unwrap();
+        let group = units.group_of("api").unwrap();
+        assert_eq!(group.tag.render("crates", "2.0.0"), "v2.0.0");
     }
 
     #[test]

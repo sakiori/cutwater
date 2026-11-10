@@ -25,16 +25,17 @@ pub struct Config {
     /// changeset rule of `check`.
     #[serde(default = "release_branch")]
     pub release_branch: String,
-    /// The discovery of npm packages: pnpm workspaces (`pnpm-workspace.yaml`),
-    /// npm workspaces (`workspaces` in `package.json`) or a single
-    /// `package.json`, at the repository root.
+    /// The npm adapter's settings. Its discovery finds the packages of a
+    /// pnpm workspace (`pnpm-workspace.yaml`), an npm workspace
+    /// (`workspaces` in `package.json`) or a single `package.json`, at the
+    /// repository root.
     #[serde(default)]
-    pub npm: DiscoverySettings,
-    /// The discovery of Cargo crates: the members of the workspace in the
-    /// root `Cargo.toml`, or the single crate it declares, as `cargo metadata`
-    /// reports them, so cargo must be on the `PATH`.
+    pub npm: AdapterSettings,
+    /// The Cargo adapter's settings. Its discovery finds the members of the
+    /// workspace in the root `Cargo.toml`, or the single crate it declares,
+    /// as `cargo metadata` reports them, so cargo must be on the `PATH`.
     #[serde(default)]
-    pub cargo: DiscoverySettings,
+    pub cargo: AdapterSettings,
     /// Units listed by hand. A listed unit overrides the discovered unit of
     /// the same name; it needs `path` and `adapter` only when no adapter
     /// discovers it.
@@ -56,10 +57,10 @@ fn release_branch() -> String {
     "cutwater/release".to_string()
 }
 
-/// How an adapter discovers units.
+/// How an adapter discovers units, and how its units are tagged.
 #[derive(Debug, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
-pub struct DiscoverySettings {
+pub struct AdapterSettings {
     /// Whether the adapter's publishable packages are units. Private npm
     /// packages and crates with `publish = false` never are.
     #[serde(default)]
@@ -68,6 +69,11 @@ pub struct DiscoverySettings {
     #[serde(default)]
     #[schemars(with = "Vec<String>")]
     pub exclude: Vec<Spanned<String>>,
+    /// The template of the release tags of the adapter's units that set
+    /// none of their own, with the placeholders `{unit}` and `{version}`.
+    /// Default: `v{version}` when the repository has one unit,
+    /// `{unit}-v{version}` otherwise.
+    pub tag: Option<String>,
 }
 
 /// A unit: what is versioned and released as one.
@@ -91,9 +97,8 @@ pub struct UnitSettings {
     /// `.changeset/` or `.cutwater/`.
     pub shipped: Option<Vec<String>>,
     /// The template of the unit's release tags, with the placeholders
-    /// `{unit}` and `{version}`. Default: `v{version}` when the repository
-    /// has one unit, `{unit}-v{version}` otherwise. A member of a fixed group
-    /// takes the group's tags and sets none.
+    /// `{unit}` and `{version}`. Default: the `tag` of the unit's adapter. A
+    /// member of a fixed group takes the group's tags and sets none.
     pub tag: Option<String>,
 }
 
@@ -107,7 +112,8 @@ pub struct GroupSettings {
     /// The names of the group's units; a unit belongs to at most one group.
     pub units: Vec<String>,
     /// The template of the group's release tags, with the placeholders
-    /// `{group}` and `{version}`. Default: `{group}-v{version}`.
+    /// `{group}` and `{version}`. Default: `v{version}` when the group holds
+    /// every unit of the repository, `{group}-v{version}` otherwise.
     pub tag: Option<String>,
 }
 
@@ -159,7 +165,7 @@ impl Config {
         Ok(config)
     }
 
-    pub fn discovery(&self, kind: AdapterKind) -> &DiscoverySettings {
+    pub fn discovery(&self, kind: AdapterKind) -> &AdapterSettings {
         match kind {
             AdapterKind::Npm => &self.npm,
             AdapterKind::Cargo => &self.cargo,
