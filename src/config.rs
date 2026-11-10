@@ -25,6 +25,13 @@ pub struct Config {
     /// changeset rule of `check`.
     #[serde(default = "release_branch")]
     pub release_branch: String,
+    /// The title of the release merge request, and the first line of its
+    /// commit.
+    #[serde(default = "release_title")]
+    pub release_title: String,
+    /// How `mr` reaches GitLab.
+    #[serde(default)]
+    pub gitlab: GitLabSettings,
     /// The npm adapter's settings. Its discovery finds the packages of a
     /// pnpm workspace (`pnpm-workspace.yaml`), an npm workspace
     /// (`workspaces` in `package.json`) or a single `package.json`, at the
@@ -44,6 +51,12 @@ pub struct Config {
     /// Fixed groups: units that always share one version and one tag.
     #[serde(default, rename = "group")]
     pub groups: Vec<GroupSettings>,
+    /// Repository checks: commands that `check`, `goal` or both run after
+    /// their own checks. A check receives the units and the plan as JSON on
+    /// standard input, runs in the repository root, and fails the step with
+    /// a non-zero exit; what it prints appears in the step's output.
+    #[serde(default, rename = "check")]
+    pub checks: Vec<CheckSettings>,
     #[serde(skip)]
     #[schemars(skip)]
     lines: LineIndex,
@@ -55,6 +68,70 @@ fn default_branch() -> String {
 
 fn release_branch() -> String {
     "cutwater/release".to_string()
+}
+
+fn release_title() -> String {
+    "Release".to_string()
+}
+
+/// The variable that holds the bot token by default.
+pub const DEFAULT_TOKEN_VARIABLE: &str = "CUTWATER_GITLAB_TOKEN";
+
+/// The variable of GitLab CI's job token, which `mr` cannot use: commits
+/// made with it start no pipelines.
+pub const JOB_TOKEN_VARIABLE: &str = "CI_JOB_TOKEN";
+
+/// How `mr` reaches GitLab. The instance and the project are those of the
+/// pipeline, from `CI_SERVER_URL` and `CI_PROJECT_ID`.
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+pub struct GitLabSettings {
+    /// The environment variable that holds the bot's token: a personal
+    /// access token of a bot user, or a project access token, with the
+    /// `api` scope, whose commits start pipelines. Never `CI_JOB_TOKEN`.
+    #[serde(default = "token_variable")]
+    pub token_variable: String,
+    /// Usernames of merge queue accounts. A release merge request assigned
+    /// to one of them is queued, and `mr` leaves it as it is.
+    #[serde(default)]
+    pub merge_queue: Vec<String>,
+}
+
+impl Default for GitLabSettings {
+    fn default() -> Self {
+        Self {
+            token_variable: token_variable(),
+            merge_queue: Vec::new(),
+        }
+    }
+}
+
+fn token_variable() -> String {
+    DEFAULT_TOKEN_VARIABLE.to_string()
+}
+
+/// A repository check: a command that a step runs after its own checks.
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+pub struct CheckSettings {
+    /// The check's name, unique among the checks, for the step's output.
+    #[schemars(with = "String")]
+    pub name: Spanned<String>,
+    /// The program and its arguments, run in the repository root without a
+    /// shell.
+    pub command: Vec<String>,
+    /// The steps that run the check.
+    pub steps: Vec<CheckStep>,
+}
+
+/// A step that runs repository checks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum CheckStep {
+    /// `cutwater check`, in merge request pipelines.
+    Check,
+    /// `cutwater goal`, in the release merge request's pipelines.
+    Goal,
 }
 
 /// How an adapter discovers units, and how its units are tagged.
@@ -143,6 +220,64 @@ impl Config {
         ] {
             if branch.trim().is_empty() {
                 bail!("{CONFIG_FILE}: `{setting}` is empty; name a branch");
+            }
+        }
+        if config.release_title.trim().is_empty() {
+            bail!(
+                "{CONFIG_FILE}: `release-title` is empty; give the release merge request a title"
+            );
+        }
+        let variable = &config.gitlab.token_variable;
+        let valid_name = variable
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+            && variable
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_');
+        if !valid_name {
+            bail!(
+                "{CONFIG_FILE}: `gitlab.token-variable` is `{variable}`, which is not the name of \
+                 an environment variable"
+            );
+        }
+        if variable == JOB_TOKEN_VARIABLE {
+            bail!(
+                "{CONFIG_FILE}: `gitlab.token-variable` names {JOB_TOKEN_VARIABLE}, but commits \
+                 made with the CI job token start no pipelines, so the release merge request \
+                 would never be checked; name the variable of a bot's token"
+            );
+        }
+        for (index, check) in config.checks.iter().enumerate() {
+            let name = check.name.get_ref();
+            let line = config.line(&check.name);
+            if name.trim().is_empty() {
+                bail!("{CONFIG_FILE}, line {line}: a repository check has an empty `name`");
+            }
+            if let Some(first) = config.checks[..index]
+                .iter()
+                .find(|other| other.name.get_ref() == name)
+            {
+                bail!(
+                    "{CONFIG_FILE}, lines {} and {line}: two repository checks are named `{name}`",
+                    config.line(&first.name)
+                );
+            }
+            if check
+                .command
+                .first()
+                .is_none_or(|program| program.is_empty())
+            {
+                bail!(
+                    "{CONFIG_FILE}, line {line}: repository check `{name}` has no `command`; \
+                     name the program and its arguments"
+                );
+            }
+            if check.steps.is_empty() {
+                bail!(
+                    "{CONFIG_FILE}, line {line}: repository check `{name}` names no `steps`; \
+                     name `check`, `goal` or both"
+                );
             }
         }
         if config.default_branch == config.release_branch {
@@ -254,6 +389,44 @@ mod tests {
         let message = error("[cargo]\nexclude = [\"xtask\"]\n");
         assert!(message.contains("line 2"), "{message}");
         assert!(message.contains("`cargo.discover`"), "{message}");
+    }
+
+    #[test]
+    fn forge_and_merge_request_defaults() {
+        let config = Config::parse("").unwrap();
+        assert_eq!(config.release_title, "Release");
+        assert_eq!(config.gitlab.token_variable, "CUTWATER_GITLAB_TOKEN");
+        assert!(config.gitlab.merge_queue.is_empty() && config.checks.is_empty());
+    }
+
+    #[test]
+    fn the_job_token_variable_is_refused() {
+        let message = error("[gitlab]\ntoken-variable = \"CI_JOB_TOKEN\"\n");
+        assert!(
+            message.contains("`gitlab.token-variable` names CI_JOB_TOKEN"),
+            "{message}"
+        );
+        let message = error("[gitlab]\ntoken-variable = \"BOT TOKEN\"\n");
+        assert!(
+            message.contains("not the name of an environment variable"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn repository_checks_need_a_name_a_command_and_steps() {
+        let check = |body: &str| error(&format!("[[check]]\nname = \"lint\"\n{body}"));
+        assert!(check("command = []\nsteps = [\"check\"]\n").contains("has no `command`"));
+        assert!(check("command = [\"lint\"]\nsteps = []\n").contains("names no `steps`"));
+        assert!(check("command = [\"lint\"]\nsteps = [\"publish\"]\n").contains("publish"));
+        let message = error(
+            "[[check]]\nname = \"lint\"\ncommand = [\"a\"]\nsteps = [\"check\"]\n\n\
+             [[check]]\nname = \"lint\"\ncommand = [\"b\"]\nsteps = [\"goal\"]\n",
+        );
+        assert!(
+            message.contains("lines 2 and 7: two repository checks are named `lint`"),
+            "{message}"
+        );
     }
 
     #[test]

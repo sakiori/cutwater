@@ -13,10 +13,26 @@
         "tag": null
       }
     },
+    "check": {
+      "description": "Repository checks: commands that `check`, `goal` or both run after\ntheir own checks. A check receives the units and the plan as JSON on\nstandard input, runs in the repository root, and fails the step with\na non-zero exit; what it prints appears in the step's output.",
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/CheckSettings"
+      }
+    },
     "default-branch": {
       "description": "The branch that releases are made from and that merge requests target.",
       "type": "string",
       "default": "main"
+    },
+    "gitlab": {
+      "description": "How `mr` reaches GitLab.",
+      "$ref": "#/$defs/GitLabSettings",
+      "default": {
+        "merge-queue": [],
+        "token-variable": "CUTWATER_GITLAB_TOKEN"
+      }
     },
     "group": {
       "description": "Fixed groups: units that always share one version and one tag.",
@@ -39,6 +55,11 @@
       "description": "The branch that holds the release merge request's commit. A merge\nrequest from this branch of the same project is exempt from the\nchangeset rule of `check`.",
       "type": "string",
       "default": "cutwater/release"
+    },
+    "release-title": {
+      "description": "The title of the release merge request, and the first line of its\ncommit.",
+      "type": "string",
+      "default": "Release"
     },
     "unit": {
       "description": "Units listed by hand. A listed unit overrides the discovered unit of\nthe same name; it needs `path` and `adapter` only when no adapter\ndiscovers it.",
@@ -89,6 +110,71 @@
             "string",
             "null"
           ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "CheckSettings": {
+      "description": "A repository check: a command that a step runs after its own checks.",
+      "type": "object",
+      "properties": {
+        "command": {
+          "description": "The program and its arguments, run in the repository root without a\nshell.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "name": {
+          "description": "The check's name, unique among the checks, for the step's output.",
+          "type": "string"
+        },
+        "steps": {
+          "description": "The steps that run the check.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CheckStep"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "command",
+        "steps"
+      ]
+    },
+    "CheckStep": {
+      "description": "A step that runs repository checks.",
+      "oneOf": [
+        {
+          "description": "`cutwater check`, in merge request pipelines.",
+          "type": "string",
+          "const": "check"
+        },
+        {
+          "description": "`cutwater goal`, in the release merge request's pipelines.",
+          "type": "string",
+          "const": "goal"
+        }
+      ]
+    },
+    "GitLabSettings": {
+      "description": "How `mr` reaches GitLab. The instance and the project are those of the\npipeline, from `CI_SERVER_URL` and `CI_PROJECT_ID`.",
+      "type": "object",
+      "properties": {
+        "merge-queue": {
+          "description": "Usernames of merge queue accounts. A release merge request assigned\nto one of them is queued, and `mr` leaves it as it is.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "token-variable": {
+          "description": "The environment variable that holds the bot's token: a personal\naccess token of a bot user, or a project access token, with the\n`api` scope, whose commits start pipelines. Never `CI_JOB_TOKEN`.",
+          "type": "string",
+          "default": "CUTWATER_GITLAB_TOKEN"
         }
       },
       "additionalProperties": false

@@ -236,3 +236,18 @@ fn inherited_version_outside_a_group_is_refused() {
          `workspace.package.version`; make them one fixed group",
         ));
 }
+
+#[test]
+fn a_working_tree_located_by_git_variables() {
+    let repo = workspace();
+    let elsewhere = tempfile::tempdir().unwrap();
+    let git_dir = elsewhere.path().join("repo.git");
+    std::fs::rename(repo.path().join(".git"), &git_dir).unwrap();
+    repo.cutwater()
+        .arg("status")
+        .env("GIT_DIR", &git_dir)
+        .env("GIT_WORK_TREE", repo.path())
+        .assert()
+        .success()
+        .stdout(contains("  .changeset/green-ui.md: ui minor\n"));
+}

@@ -318,6 +318,38 @@ pub trait Adapter: Sync {
     /// Asks each unit's registry, through the ecosystem's tool and the
     /// environment's settings, whether it holds a version of the unit.
     fn published(&self, request: &PublishedRequest) -> Result<Publications, AdapterError>;
+
+    /// Prepares what the units would publish, as publication prepares it,
+    /// and checks it: that it carries the released versions and nothing
+    /// only the repository can resolve.
+    fn prepare(&self, request: &PrepareRequest) -> Result<Prepared, AdapterError>;
+}
+
+/// The request to prepare and check what units would publish.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PrepareRequest {
+    pub root: PathBuf,
+    /// The adapter's units.
+    pub units: Vec<UnitRef>,
+    /// The units to prepare, each with the version it releases.
+    pub packages: Vec<VersionQuery>,
+    /// The released version of every unit of the repository, which the
+    /// prepared packages' references to units must accept.
+    pub released: Vec<VersionWrite>,
+}
+
+/// What is wrong with the prepared packages; nothing when they are fit to
+/// publish.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Prepared {
+    pub problems: Vec<PackageProblem>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PackageProblem {
+    /// The units the problem concerns.
+    pub units: Vec<String>,
+    pub message: String,
 }
 
 /// The request to ask the units' registries about versions.
@@ -381,11 +413,13 @@ const PLAIN_OUTPUT: [(&str, &str); 4] = [
 ];
 
 /// The captured result of an ecosystem tool, or the adapter error of a
-/// tool that cannot run, naming `file`.
+/// tool that cannot run, naming `file` and what the tool was run for, such
+/// as `asking the registry`.
 fn run_tool(
     command: &mut std::process::Command,
     tool: &str,
     file: &str,
+    purpose: &str,
 ) -> Result<std::process::Output, AdapterError> {
     command
         .envs(PLAIN_OUTPUT)
@@ -393,12 +427,23 @@ fn run_tool(
         .output()
         .map_err(|err| {
             let problem = if err.kind() == std::io::ErrorKind::NotFound {
-                format!("asking the registry needs {tool}, which is not on the PATH")
+                format!("{purpose} needs {tool}, which is not on the PATH")
             } else {
                 format!("cannot run {tool}: {err}")
             };
             AdapterError::new(file, problem)
         })
+}
+
+/// What a failed tool said: its standard error, or its standard output when
+/// it wrote nothing there.
+fn tool_message(output: &std::process::Output) -> String {
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if stderr.trim().is_empty() {
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    } else {
+        stderr.trim().to_string()
+    }
 }
 
 /// Runs a lockfile's command in its directory below `root`, failing with
@@ -423,16 +468,13 @@ pub fn refresh(root: &Path, lockfile: &Lockfile) -> Result<(), AdapterError> {
             AdapterError::new(&lockfile.path, problem)
         })?;
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let detail = if stderr.trim().is_empty() {
-            stdout.trim().to_string()
-        } else {
-            stderr.trim().to_string()
-        };
         return Err(AdapterError::new(
             &lockfile.path,
-            format!("`{}` failed: {detail}", lockfile.command.join(" ")),
+            format!(
+                "`{}` failed: {}",
+                lockfile.command.join(" "),
+                tool_message(&output)
+            ),
         ));
     }
     Ok(())

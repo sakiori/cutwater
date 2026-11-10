@@ -13,8 +13,9 @@ use toml_edit::{DocumentMut, Item, TableLike, Value};
 use super::{
     AcceptsRequest, Adapter, AdapterError, DiscoverRequest, DiscoveredUnit, Discovery, Edge,
     EdgeKind, FileWrite, InspectRequest, Inspection, Location, LockfileRequest, Lockfiles,
-    PLAIN_OUTPUT, Publication, Publications, PublishedRequest, UnitVersion, WriteRequest, Writes,
-    join, nearest_lockfiles, resolve_dir, run_tool,
+    PLAIN_OUTPUT, PackageProblem, PrepareRequest, Prepared, Publication, Publications,
+    PublishedRequest, UnitRef, UnitVersion, VersionQuery, WriteRequest, Writes, join,
+    nearest_lockfiles, resolve_dir, run_tool,
 };
 
 pub struct Cargo;
@@ -275,23 +276,7 @@ impl Adapter for Cargo {
         let mut packages = Vec::new();
         for query in &request.queries {
             let file = join(&query.unit.path, "Cargo.toml");
-            let metadata = metadata(root, &root.join(&file), None)?;
-            let package = metadata
-                .workspace_packages()
-                .into_iter()
-                .find(|package| {
-                    package
-                        .manifest_path
-                        .parent()
-                        .and_then(|dir| relative(root, dir.as_std_path(), &file).ok())
-                        .is_some_and(|dir| dir == query.unit.path)
-                })
-                .ok_or_else(|| {
-                    AdapterError::new(
-                        &file,
-                        format!("is not the package of `{}`", query.unit.name),
-                    )
-                })?;
+            let package = package_of(root, &query.unit)?;
             // `cargo publish` takes the only registry `publish` names, or
             // the default one, and asks for `--registry` when it names
             // several.
@@ -332,7 +317,7 @@ impl Adapter for Cargo {
                 if let Some(registry) = &registry {
                     command.args(["--registry", registry]);
                 }
-                let output = run_tool(&mut command, "cargo", &file)?;
+                let output = run_tool(&mut command, "cargo", &file, "asking the registry")?;
                 let stderr = String::from_utf8_lossy(&output.stderr);
                 Ok(if output.status.success() {
                     Answer::Listed(String::from_utf8_lossy(&output.stdout).into_owned())
@@ -373,6 +358,141 @@ impl Adapter for Cargo {
             )
         })?;
         Ok(Publications { units })
+    }
+
+    /// Packages the crates together with `cargo package`, which verifies
+    /// each packaged crate by building it, so that crates of the release
+    /// that depend on each other resolve the versions packaged with them.
+    fn prepare(&self, request: &PrepareRequest) -> Result<Prepared, AdapterError> {
+        if request.packages.is_empty() {
+            return Ok(Prepared::default());
+        }
+        let root = &request.root;
+        let edges = self
+            .inspect(&InspectRequest {
+                root: root.clone(),
+                units: request.units.clone(),
+            })?
+            .edges;
+        if let Some(edge) = released_reference(&request.packages, &edges) {
+            let mut version = std::process::Command::new("cargo");
+            version.arg("--version").current_dir(root);
+            let output = run_tool(&mut version, "cargo", "Cargo.toml", "packaging crates")?;
+            if !output.status.success() {
+                return Err(AdapterError::new(
+                    "Cargo.toml",
+                    format!("`cargo --version` failed: {}", super::tool_message(&output)),
+                ));
+            }
+            let found = cargo_version(&String::from_utf8_lossy(&output.stdout))
+                .map_err(|problem| AdapterError::new("Cargo.toml", problem))?;
+            if !packages_together(&found) {
+                return Err(AdapterError::new(
+                    &edge.location.file,
+                    format!(
+                        "`{}` refers to `{}` with a version, and the release publishes both, \
+                         which needs cargo {WORKSPACE_PACKAGING} or newer to package them \
+                         against each other's new versions, but this is cargo {found}; use a \
+                         newer toolchain",
+                        edge.dependent_unit
+                            .as_deref()
+                            .unwrap_or(&edge.dependent_path),
+                        edge.dependency
+                    ),
+                ));
+            }
+        }
+        let mut command = std::process::Command::new("cargo");
+        command.args(["package", "--locked"]).current_dir(root);
+        let mut problems = Vec::new();
+        for query in &request.packages {
+            let package = package_of(root, &query.unit)?;
+            if package.version.to_string() != query.version {
+                problems.push(PackageProblem {
+                    units: vec![query.unit.name.clone()],
+                    message: format!(
+                        "{} declares the version {}, but the release is {}",
+                        join(&query.unit.path, "Cargo.toml"),
+                        package.version,
+                        query.version
+                    ),
+                });
+            }
+            command.args(["--package", &package.name]);
+        }
+        if !problems.is_empty() {
+            return Ok(Prepared { problems });
+        }
+        let output = run_tool(&mut command, "cargo", "Cargo.toml", "packaging crates")?;
+        if output.status.success() {
+            return Ok(Prepared::default());
+        }
+        Ok(Prepared {
+            problems: vec![PackageProblem {
+                units: request
+                    .packages
+                    .iter()
+                    .map(|query| query.unit.name.clone())
+                    .collect(),
+                message: format!("`cargo package` failed: {}", cargo_errors(&output)),
+            }],
+        })
+    }
+}
+
+/// The first cargo that packages the selected crates of a workspace
+/// together, each against the new versions of the others.
+const WORKSPACE_PACKAGING: Version = Version::new(1, 90, 0);
+
+/// A reference from one crate the release publishes to another that names
+/// a version, which packaging must resolve against the other's new
+/// version. A development dependency without a version is dropped from the
+/// package and needs nothing.
+fn released_reference<'a>(packages: &[VersionQuery], edges: &'a [Edge]) -> Option<&'a Edge> {
+    let released = |unit: &str| packages.iter().any(|query| query.unit.name == unit);
+    edges.iter().find(|edge| {
+        edge.range.is_some()
+            && edge.dependent_unit.as_deref().is_some_and(released)
+            && released(&edge.dependency)
+    })
+}
+
+/// The version `cargo --version` reports.
+fn cargo_version(output: &str) -> Result<Version, String> {
+    output
+        .split_whitespace()
+        .nth(1)
+        .and_then(|version| Version::parse(version).ok())
+        .ok_or_else(|| {
+            format!(
+                "cannot tell the version of cargo from `cargo --version`: {}",
+                output.trim()
+            )
+        })
+}
+
+/// Whether a cargo packages the selected crates together: from
+/// [`WORKSPACE_PACKAGING`] on, its betas included, but not the nightlies of
+/// that release, which partly predate the feature.
+fn packages_together(found: &Version) -> bool {
+    let release = Version::new(found.major, found.minor, found.patch);
+    if found.pre.is_empty() || found.pre.as_str().starts_with("beta") {
+        release >= WORKSPACE_PACKAGING
+    } else {
+        release > WORKSPACE_PACKAGING
+    }
+}
+
+/// What a failed cargo said from its first error on, without the progress
+/// and warnings before it.
+fn cargo_errors(output: &std::process::Output) -> String {
+    let message = super::tool_message(output);
+    match message
+        .match_indices("error")
+        .find(|(at, _)| *at == 0 || message[..*at].ends_with('\n'))
+    {
+        Some((at, _)) => message[at..].to_string(),
+        None => message,
     }
 }
 
@@ -698,6 +818,23 @@ fn discover(root: &Path, cargo: Option<&Path>) -> Result<Discovery, AdapterError
     Ok(Discovery { units })
 }
 
+/// The package of a unit, as `cargo metadata` describes it.
+fn package_of(root: &Path, unit: &UnitRef) -> Result<cargo_metadata::Package, AdapterError> {
+    let file = join(&unit.path, "Cargo.toml");
+    metadata(root, &root.join(&file), None)?
+        .workspace_packages()
+        .into_iter()
+        .find(|package| {
+            package
+                .manifest_path
+                .parent()
+                .and_then(|dir| relative(root, dir.as_std_path(), &file).ok())
+                .is_some_and(|dir| dir == unit.path)
+        })
+        .cloned()
+        .ok_or_else(|| AdapterError::new(&file, format!("is not the package of `{}`", unit.name)))
+}
+
 /// `cargo metadata` of the workspace of `manifest`, run in `root`.
 fn metadata(root: &Path, manifest: &Path, cargo: Option<&Path>) -> Result<Metadata, AdapterError> {
     let file = manifest
@@ -768,6 +905,7 @@ fn canonical(path: &Path) -> Result<PathBuf, AdapterError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
     use crate::adapter::{ReferenceWrite, UnitRef, VersionWrite};
 
     fn write(root: &Path, file: &str, content: &str) {
@@ -807,6 +945,60 @@ mod tests {
             .iter()
             .map(|(name, path)| (name.to_string(), path.to_string()))
             .collect()
+    }
+
+    #[test]
+    fn cargo_versions_that_package_workspace_crates_together() {
+        let version = |output: &str| cargo_version(output).unwrap();
+        for (output, together) in [
+            ("cargo 1.89.0 (c24e10642 2025-06-23)", false),
+            ("cargo 1.90.0-nightly (930b4f62c 2025-06-28)", false),
+            ("cargo 1.90.0-beta.5 (840b83a10 2025-07-30)", true),
+            ("cargo 1.90.0 (840b83a10 2025-07-30)", true),
+            ("cargo 1.91.0-nightly (623d53683 2025-08-22)", true),
+            ("cargo 1.99.1 (5f94df478 2026-08-27)\n", true),
+        ] {
+            assert_eq!(packages_together(&version(output)), together, "{output}");
+        }
+        assert!(
+            cargo_version("not cargo")
+                .unwrap_err()
+                .contains("cannot tell the version of cargo")
+        );
+    }
+
+    #[test]
+    fn only_versioned_references_between_released_crates_need_packaging_together() {
+        let unit = |name: &str| VersionQuery {
+            unit: UnitRef {
+                name: name.to_string(),
+                path: format!("crates/{name}"),
+            },
+            version: "2.0.0".to_string(),
+        };
+        let edge = |dependent: &str, dependency: &str, kind, range: Option<&str>| Edge {
+            dependent_path: format!("crates/{dependent}"),
+            dependent_unit: Some(dependent.to_string()),
+            dependency: dependency.to_string(),
+            kind,
+            reference: String::new(),
+            range: range.map(str::to_string),
+            follows: false,
+            location: Location::new(format!("crates/{dependent}/Cargo.toml"), &["dependencies"]),
+        };
+        let both = [unit("a"), unit("b")];
+        for kind in [
+            EdgeKind::Runtime,
+            EdgeKind::Optional,
+            EdgeKind::Build,
+            EdgeKind::Development,
+        ] {
+            let edges = [edge("b", "a", kind, Some("2.0.0"))];
+            assert!(released_reference(&both, &edges).is_some(), "{kind}");
+            assert!(released_reference(&both[..1], &edges).is_none(), "{kind}");
+        }
+        let unversioned = [edge("b", "a", EdgeKind::Development, None)];
+        assert!(released_reference(&both, &unversioned).is_none());
     }
 
     #[test]

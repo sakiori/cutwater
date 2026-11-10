@@ -53,30 +53,36 @@ pub fn run(args: &VersionArgs) -> Result<ExitCode> {
         print_lockfiles("Would refresh", &changes.lockfiles)?;
         return Ok(ExitCode::SUCCESS);
     }
+    write(repo.git.root(), &changes, "cutwater version")?;
+    print_files("Wrote", &changes.writes.keys().cloned().collect::<Vec<_>>())?;
+    print_files("Deleted", &changes.deletions)?;
+    print_lockfiles("Refreshed", &changes.lockfiles)?;
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Applies the changes to the working tree at `root` for `command`. When a
+/// step fails, it puts every file back.
+pub fn write(root: &Path, changes: &Changes, command: &str) -> Result<()> {
     for lockfile in &changes.lockfiles {
         let tool = &lockfile.command[0];
         if which::which(tool).is_err() {
             bail!(
                 "{}: refreshing it needs {tool}, which is not on the PATH; install {tool} and \
-                 run `cutwater version` again",
+                 run `{command}` again",
                 lockfile.path
             );
         }
     }
-    let root = repo.git.root();
     let mut journal = Journal::default();
-    if let Err(err) = apply(root, &changes, &mut journal) {
+    if let Err(err) = apply(root, changes, &mut journal) {
         return Err(match journal.restore(root) {
-            Ok(()) => err.context("the working tree is as it was before `cutwater version`"),
+            Ok(()) => err.context(format!("the working tree is as it was before `{command}`")),
             Err(restore) => err.context(format!(
                 "restoring the working tree failed too, so it is partly changed: {restore:#}"
             )),
         });
     }
-    print_files("Wrote", &changes.writes.keys().cloned().collect::<Vec<_>>())?;
-    print_files("Deleted", &changes.deletions)?;
-    print_lockfiles("Refreshed", &changes.lockfiles)?;
-    Ok(ExitCode::SUCCESS)
+    Ok(())
 }
 
 /// Writes the files, refreshes the lockfiles and deletes the applied files

@@ -5,8 +5,9 @@
 use std::path::Path;
 use std::process::Command;
 
-/// The GitLab CI variables the tool reads, which the tests set themselves.
-const CI_VARIABLES: [&str; 8] = [
+/// The GitLab CI variables and tokens the tool reads, which the tests set
+/// themselves.
+const CI_VARIABLES: [&str; 14] = [
     "CI_MERGE_REQUEST_DIFF_BASE_SHA",
     "CI_MERGE_REQUEST_TARGET_BRANCH_SHA",
     "CI_MERGE_REQUEST_SOURCE_BRANCH_SHA",
@@ -15,6 +16,23 @@ const CI_VARIABLES: [&str; 8] = [
     "CI_MERGE_REQUEST_SOURCE_PROJECT_ID",
     "CI_MERGE_REQUEST_PROJECT_ID",
     "CI_PROJECT_ID",
+    "GITLAB_CI",
+    "CI_COMMIT_BRANCH",
+    "CI_SERVER_URL",
+    "CI_SERVER_TLS_CA_FILE",
+    "CI_JOB_TOKEN",
+    "CUTWATER_GITLAB_TOKEN",
+];
+
+/// The proxy settings an HTTP client reads, which would send the tests'
+/// requests to a local mock server elsewhere.
+const PROXY_VARIABLES: [&str; 6] = [
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "ALL_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "all_proxy",
 ];
 
 /// A git repository in a temporary directory, on the branch `main`, with
@@ -120,7 +138,7 @@ impl Repo {
     /// The tool as a process to spawn, run in `dir` with no CI variables set.
     pub fn cutwater_process(&self, dir: &Path) -> Command {
         let mut cmd = Command::new(assert_cmd::cargo::cargo_bin!("cutwater"));
-        for variable in CI_VARIABLES {
+        for variable in CI_VARIABLES.into_iter().chain(PROXY_VARIABLES) {
             cmd.env_remove(variable);
         }
         isolated(cmd, dir)

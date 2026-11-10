@@ -710,3 +710,55 @@ fn revert_of_a_release_merge_request_fails() {
             "this merge request changes .cutwater/versions.toml, but only `cutwater version` writes it",
         ));
 }
+
+#[test]
+fn repository_checks_receive_the_units_and_the_plan() {
+    let input = tempfile::tempdir().unwrap();
+    let input_file = input.path().join("input.json");
+    let config = format!(
+        "[npm]\ndiscover = true\n\n[[check]]\nname = \"record\"\ncommand = [\"sh\", \"-c\", \"cat > \\\"$0\\\"; echo 'no findings'\", \"{}\"]\nsteps = [\"check\", \"goal\"]\n\n[[check]]\nname = \"exports\"\ncommand = [\"sh\", \"-c\", \"echo 'api exports the removed module ./legacy'; exit 1\"]\nsteps = [\"check\"]\n",
+        input_file.display()
+    );
+    let repo = Repo::with(
+        &config,
+        &[
+            (".cutwater/versions.toml", "[units]\napi = \"1.4.2\"\n"),
+            ("package.json", r#"{"name": "api", "version": "1.4.2"}"#),
+        ],
+    );
+    repo.git(&["checkout", "--quiet", "-b", "feature"]);
+    repo.write("index.js", "export {};\n");
+    repo.write(
+        ".changeset/brave-lions-dance.md",
+        &changeset(&[("api", "minor")], "Add the export endpoint."),
+    );
+    repo.commit("change api");
+    repo.cutwater()
+        .args(["check", "--base", "main"])
+        .assert()
+        .code(1)
+        .stdout(contains(
+            "Repository check `record`:\nno findings\nRepository check `record` passed.\n",
+        ))
+        .stdout(contains(
+            "Repository check `exports`:\napi exports the removed module ./legacy\n",
+        ))
+        .stderr(contains(
+            "error: repository check `exports` failed (exit status 1)",
+        ));
+    let input: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&input_file).unwrap()).unwrap();
+    assert_eq!(
+        input,
+        serde_json::json!({
+            "step": "check",
+            "units": [{
+                "name": "api", "path": ".", "adapter": "npm", "group": null,
+                "released": "1.4.2", "declared": "1.4.2",
+            }],
+            "plan": {"releases": [
+                {"unit": "api", "adapter": "npm", "current": "1.4.2", "next": "1.5.0"},
+            ]},
+        })
+    );
+}

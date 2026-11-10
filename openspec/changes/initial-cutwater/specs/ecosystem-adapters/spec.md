@@ -117,7 +117,7 @@ The built-in adapters SHALL implement one internal interface: discover units, re
 - **THEN** the adapter reports a runtime edge to `core` and a development edge to `testkit`
 
 ### Requirement: Repository checks
-A repository check SHALL be a command the configuration names for `check`, `goal` or both. It SHALL receive the units and the plan as JSON on standard input, fail the step with a non-zero exit, and its findings on standard output SHALL appear in the step's output.
+A repository check SHALL be a command the configuration names for `check`, `goal` or both. It SHALL receive the units and the plan as JSON on standard input, fail the step with a non-zero exit, and its findings on standard output SHALL appear in the step's output. In `check` the plan SHALL be the releases the pending changesets make, and in `goal` the releases the release merge request makes.
 
 #### Scenario: Repository check in the release merge request
 - **WHEN** the configuration names a check for `goal` that rejects a package exporting a removed module

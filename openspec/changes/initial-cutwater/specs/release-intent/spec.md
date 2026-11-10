@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: Configuration
-The tool SHALL read the repository's settings from `.cutwater/config.toml`: the default branch, the release branch, the title of the release merge request, the units, the fixed groups, the repository checks and the adapter settings. It SHALL refuse to run when the file is missing or invalid, naming the setting and the problem. The project SHALL publish a JSON Schema of the file.
+The tool SHALL read the repository's settings from `.cutwater/config.toml`: the default branch, the release branch, the title of the release merge request, the forge settings, the units, the fixed groups, the repository checks and the adapter settings. It SHALL refuse to run when the file is missing or invalid, naming the setting and the problem. The project SHALL publish a JSON Schema of the file.
 
 #### Scenario: Missing configuration
 - **WHEN** any command but `init` runs in a repository without `.cutwater/config.toml`

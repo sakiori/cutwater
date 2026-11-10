@@ -1,8 +1,11 @@
 //! The subcommands.
 
 pub mod add;
+mod base;
 pub mod check;
+pub mod goal;
 pub mod init;
+pub mod mr;
 pub mod pre;
 pub mod status;
 pub mod version;
@@ -14,7 +17,8 @@ use semver::Version;
 
 use crate::adapter::{AcceptsRequest, AdapterKind, Edge, InspectRequest, UnitRef, UnitVersion};
 use crate::changeset::{self, Changeset};
-use crate::config::Config;
+use crate::checks::{self, PlanInput, UnitInput};
+use crate::config::{CheckStep, Config};
 use crate::git::Git;
 use crate::manifest::Manifest;
 use crate::plan::{self, Plan};
@@ -48,7 +52,11 @@ impl Repository {
     /// The repository around the current directory.
     pub fn open() -> Result<Repository> {
         let cwd = std::env::current_dir().context("cannot read the current directory")?;
-        let git = Git::discover(&cwd)?;
+        Self::open_with(Git::discover(&cwd)?)
+    }
+
+    /// The repository of the working tree `git` is bound to.
+    pub fn open_with(git: Git) -> Result<Repository> {
         let config = Config::load(git.root())?;
         let units = Units::resolve(git.root(), &config)?;
         Ok(Repository { git, config, units })
@@ -90,12 +98,18 @@ impl Repository {
 
     /// The plan of the pending changesets of the working tree.
     pub fn plan(&self) -> Result<Planned> {
-        let root = self.git.root();
-        let changesets = changeset::pending_in(root)?;
+        let changesets = changeset::pending_in(self.git.root())?;
         changeset::validate(&changesets, &self.units)?;
+        let inspected = self.inspect()?;
+        self.plan_from(changesets, &inspected)
+    }
+
+    /// The plan of `changesets`, valid for the units, from the manifest and
+    /// prerelease state of the working tree and what the adapters read.
+    pub fn plan_from(&self, changesets: Vec<Changeset>, inspected: &Inspected) -> Result<Planned> {
+        let root = self.git.root();
         let manifest = Manifest::load(root)?;
         let pre = PreState::load(root)?;
-        let inspected = self.inspect()?;
         let accepts =
             |kind: AdapterKind, range: &str, file: &str, version: &Version| -> Result<bool> {
                 Ok(kind.adapter().accepts(&AcceptsRequest {
@@ -121,5 +135,46 @@ impl Repository {
             pre,
             manifest,
         })
+    }
+
+    /// Runs the repository checks the configuration names for `step` with
+    /// the units and `plan` as their input; `true` when all passed, or none
+    /// is configured.
+    pub fn repository_checks(
+        &self,
+        step: CheckStep,
+        manifest: &Manifest,
+        inspected: &Inspected,
+        plan: PlanInput,
+    ) -> Result<bool> {
+        let checks = checks::for_step(&self.config.checks, step);
+        if checks.is_empty() {
+            return Ok(true);
+        }
+        let units = self
+            .units
+            .iter()
+            .map(|unit| UnitInput {
+                name: unit.name.clone(),
+                path: unit.path.clone(),
+                adapter: unit.adapter,
+                group: self
+                    .units
+                    .group_of(&unit.name)
+                    .map(|group| group.name.clone()),
+                released: manifest
+                    .get(&unit.name)
+                    .map(|entry| entry.version.to_string()),
+                declared: inspected
+                    .declared
+                    .get(&unit.name)
+                    .map(|declared| declared.version.clone()),
+            })
+            .collect();
+        checks::run(
+            self.git.root(),
+            &checks,
+            &checks::Input { step, units, plan },
+        )
     }
 }

@@ -44,7 +44,7 @@ GitLab removes a merge request from a merge train when new commits arrive, and c
 
 ### Credentials and GitLab tiers
 
-`mr` needs a token whose commits start pipelines: a bot user's personal access token on GitLab.com Free, or a project access token where the tier provides one. `publish` creates tags and Releases with the bot token too. The CI job token would act with the rights of whoever merged, so whether a protected release tag can be created would depend on the person. `publish` checks the bot's right to create every tag before it publishes anything, because a failure after publication leaves an untagged release. The tool's guarantee that the checked tree lands needs fast-forward merges, which every tier has, or merged results pipelines or merge trains, which need Premium. `mr` reads the project's settings and warns when none of these holds.
+`mr` needs a token whose commits start pipelines: a bot user's personal access token on GitLab.com Free, or a project access token where the tier provides one. `publish` creates tags and Releases with the bot token too. The CI job token would act with the rights of whoever merged, so whether a protected release tag can be created would depend on the person. `publish` checks the bot's right to create every tag before it publishes anything, because a failure after publication leaves an untagged release. The tool's guarantee that the checked tree lands needs fast-forward merges or merge commits with semi-linear history, which every tier has and which both require the merge request to contain the target branch, or merged results pipelines or merge trains, which need Premium. `mr` reads the project's settings and warns when none of these holds.
 
 ### Rust, built-in adapters and repository checks
 

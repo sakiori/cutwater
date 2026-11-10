@@ -12,16 +12,28 @@ pub struct Entry {
 }
 
 /// The changelog section of one release: the version heading, then the
-/// entries grouped by bump, major first, with the updated dependencies
-/// among the changes of `dependencies_bump`: patch, as in Changesets, or a
-/// higher bump a dependency caused.
+/// release's [`body`].
 pub fn section(
     version: &str,
     dependencies_bump: Bump,
     entries: &[Entry],
     dependencies: &[(String, String)],
 ) -> String {
-    let mut parts = vec![format!("## {version}")];
+    format!(
+        "## {version}\n\n{}",
+        body(dependencies_bump, entries, dependencies)
+    )
+}
+
+/// The changes of one release: the entries grouped by bump, major first,
+/// with the updated dependencies among the changes of `dependencies_bump`:
+/// patch, as in Changesets, or a higher bump a dependency caused.
+pub fn body(
+    dependencies_bump: Bump,
+    entries: &[Entry],
+    dependencies: &[(String, String)],
+) -> String {
+    let mut parts = Vec::new();
     for (bump, title) in [
         (Bump::Major, "Major Changes"),
         (Bump::Minor, "Minor Changes"),
@@ -43,7 +55,7 @@ pub fn section(
             parts.push(format!("### {title}\n\n{}", lines.join("\n")));
         }
     }
-    if parts.len() == 1 {
+    if parts.is_empty() {
         parts.push("No changes in this release.".to_string());
     }
     parts.join("\n\n")

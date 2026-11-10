@@ -14,8 +14,8 @@ use super::walk::{PNPM_MANIFESTS, npm_dirs, pnpm_dirs};
 use super::{
     AcceptsRequest, Adapter, AdapterError, DiscoverRequest, DiscoveredUnit, Discovery, Edge,
     EdgeKind, FileWrite, InspectRequest, Inspection, Location, LockfileRequest, Lockfiles,
-    Publication, Publications, PublishedRequest, UnitVersion, WriteRequest, Writes, join,
-    nearest_lockfiles, publication, run_tool,
+    PackageProblem, PrepareRequest, Prepared, Publication, Publications, PublishedRequest,
+    UnitVersion, WriteRequest, Writes, join, nearest_lockfiles, publication, run_tool,
 };
 
 pub struct Npm;
@@ -309,7 +309,7 @@ impl Adapter for Npm {
                     command.arg(format!("--{scope}:registry={registry}"));
                 }
             }
-            let output = run_tool(&mut command, "npm", &file)?;
+            let output = run_tool(&mut command, "npm", &file, "asking the registry")?;
             let registry = match registry {
                 Some(registry) => format!("the npm registry {registry}"),
                 None => "the npm registry the environment configures".to_string(),
@@ -324,6 +324,166 @@ impl Adapter for Npm {
         }
         Ok(Publications { units })
     }
+
+    /// Packs each package with the workspace's package manager, running the
+    /// lifecycle scripts packing runs, and reads the packed `package.json`.
+    /// pnpm resolves `workspace:` references from the installed workspace,
+    /// so the workspace must be installed.
+    fn prepare(&self, request: &PrepareRequest) -> Result<Prepared, AdapterError> {
+        let root = &request.root;
+        let mut units_by_package = HashMap::new();
+        for unit in &request.units {
+            let name = package_json(root, &unit.path)?.name.ok_or_else(|| {
+                AdapterError::new(join(&unit.path, "package.json"), "has no `name` string")
+            })?;
+            units_by_package.insert(name, unit.name.clone());
+        }
+        let released: HashMap<&str, &str> = request
+            .released
+            .iter()
+            .map(|write| (write.unit.as_str(), write.version.as_str()))
+            .collect();
+        let tool = package_manager(root);
+        let mut problems = Vec::new();
+        for package in &request.packages {
+            let file = join(&package.unit.path, "package.json");
+            let destination = tempfile::tempdir().map_err(|err| {
+                AdapterError::new(
+                    &file,
+                    format!("cannot create a directory to pack into: {err}"),
+                )
+            })?;
+            let mut command = std::process::Command::new(tool);
+            command
+                .arg("pack")
+                .arg("--pack-destination")
+                .arg(destination.path())
+                .current_dir(root.join(&package.unit.path));
+            let output = run_tool(&mut command, tool, &file, "packing it")?;
+            let problem = |message: String| PackageProblem {
+                units: vec![package.unit.name.clone()],
+                message,
+            };
+            if !output.status.success() {
+                problems.push(problem(format!(
+                    "`{tool} pack` failed: {}",
+                    super::tool_message(&output)
+                )));
+                continue;
+            }
+            let packed = packed_manifest(destination.path())
+                .map_err(|message| AdapterError::new(&file, message))?;
+            problems.extend(
+                check_packed(&packed, &package.version, &units_by_package, &released)
+                    .into_iter()
+                    .map(problem),
+            );
+        }
+        Ok(Prepared { problems })
+    }
+}
+
+/// The package manager of the workspace at `root`: pnpm where it has a
+/// pnpm workspace or lockfile, npm otherwise.
+fn package_manager(root: &Path) -> &'static str {
+    if root.join(PNPM_WORKSPACE).is_file() || root.join("pnpm-lock.yaml").is_file() {
+        "pnpm"
+    } else {
+        "npm"
+    }
+}
+
+/// The `package.json` of the only archive packed into `dir`.
+fn packed_manifest(dir: &Path) -> Result<Value, String> {
+    let entries =
+        std::fs::read_dir(dir).map_err(|err| format!("cannot list {}: {err}", dir.display()))?;
+    let archives: Vec<_> = entries
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|extension| extension == "tgz"))
+        .collect();
+    let [archive] = archives.as_slice() else {
+        return Err(format!(
+            "packing it left {} archives instead of one",
+            archives.len()
+        ));
+    };
+    let unreadable = |err: std::io::Error| format!("cannot read the packed archive: {err}");
+    let file = std::fs::File::open(archive).map_err(unreadable)?;
+    let mut tarball = tar::Archive::new(flate2::read::GzDecoder::new(file));
+    for entry in tarball.entries().map_err(unreadable)? {
+        let mut entry = entry.map_err(unreadable)?;
+        if entry.path().map_err(unreadable)?.as_os_str() == "package/package.json" {
+            let mut text = String::new();
+            std::io::Read::read_to_string(&mut entry, &mut text).map_err(unreadable)?;
+            return serde_json::from_str(&text)
+                .map_err(|err| format!("the packed package.json is not JSON: {err}"));
+        }
+    }
+    Err("the packed archive holds no package/package.json".to_string())
+}
+
+/// What is wrong with a packed `package.json` that should release
+/// `version`: another version, references only the workspace resolves, and
+/// references to units that do not accept their released versions.
+fn check_packed(
+    packed: &Value,
+    version: &str,
+    units_by_package: &HashMap<String, String>,
+    released: &HashMap<&str, &str>,
+) -> Vec<String> {
+    let mut problems = Vec::new();
+    let packed_version = packed.get("version").and_then(Value::as_str);
+    if packed_version != Some(version) {
+        problems.push(format!(
+            "the packed package.json has the version {}, but the release is {version}",
+            packed_version.map_or_else(|| "(none)".to_string(), |v| format!("`{v}`"))
+        ));
+    }
+    for (table, kind) in DEPENDENCY_TABLES {
+        let Some(dependencies) = packed.get(table).and_then(Value::as_object) else {
+            continue;
+        };
+        for (package, reference) in dependencies {
+            let Some(reference) = reference.as_str() else {
+                continue;
+            };
+            if ["workspace:", "catalog:"]
+                .iter()
+                .any(|protocol| reference.starts_with(protocol))
+            {
+                problems.push(format!(
+                    "the packed package.json still has `{table}.{package}` as `{reference}`, \
+                     which only the workspace resolves"
+                ));
+                continue;
+            }
+            if kind == EdgeKind::Development {
+                continue;
+            }
+            let Some(unit) = units_by_package.get(package) else {
+                continue;
+            };
+            let Some(dependency_version) = released.get(unit.as_str()) else {
+                continue;
+            };
+            let accepted = Range::parse(reference).ok().map(|range| {
+                Version::parse(dependency_version).is_ok_and(|version| range.satisfies(&version))
+            });
+            match accepted {
+                Some(true) => {}
+                Some(false) => problems.push(format!(
+                    "the packed package.json has `{table}.{package}` as `{reference}`, which \
+                     does not accept {dependency_version}, the released version of `{unit}`"
+                )),
+                None => problems.push(format!(
+                    "the packed package.json has `{table}.{package}` as `{reference}`, which is \
+                     not a version range of `{unit}`"
+                )),
+            }
+        }
+    }
+    problems
 }
 
 /// The versions `npm view <name> versions --json` reports: a list, or a

@@ -41,6 +41,17 @@ enum Command {
     /// Enter or leave prerelease mode.
     #[command(subcommand)]
     Pre(PreCommand),
+    /// Bring the release merge request up to date, in a pipeline of the
+    /// default branch: apply the pending changesets to the default branch's
+    /// tip, commit the result onto the release branch through GitLab's API
+    /// and create or update the merge request, or close it when nothing is
+    /// pending. Never merges it.
+    Mr(MrArgs),
+    /// Check the release merge request, in its pipeline: no pending
+    /// changeset names a unit it releases, the units' files hold the
+    /// manifest's versions, and what would be published passes the
+    /// adapters' checks; then run the repository checks.
+    Goal(GoalArgs),
 }
 
 #[derive(Debug, Args)]
@@ -69,6 +80,23 @@ pub struct CheckArgs {
     /// The commit to compare with, normally the merge request's diff base;
     /// the comparison starts from its merge base with HEAD. Default: the
     /// commit CI_MERGE_REQUEST_DIFF_BASE_SHA names.
+    #[arg(long, value_name = "COMMIT")]
+    pub base: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct MrArgs {
+    /// Say what would be written and how the merge request would change,
+    /// and change nothing on GitLab.
+    #[arg(long)]
+    pub dry_run: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct GoalArgs {
+    /// The commit to compare the version manifest with, normally the merge
+    /// request's target; the comparison starts from its merge base with
+    /// HEAD. Default: as for `check`, from GitLab's CI variables.
     #[arg(long, value_name = "COMMIT")]
     pub base: Option<String>,
 }
@@ -135,6 +163,8 @@ pub fn main() -> ExitCode {
         Command::Status(args) => commands::status::run(&args),
         Command::Version(args) => commands::version::run(&args),
         Command::Pre(command) => commands::pre::run(&command),
+        Command::Mr(args) => commands::mr::run(&args),
+        Command::Goal(args) => commands::goal::run(&args),
     };
     match result {
         Ok(code) => code,

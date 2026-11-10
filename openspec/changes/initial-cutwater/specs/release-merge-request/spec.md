@@ -30,14 +30,18 @@ The release merge request's title SHALL come from the configuration, and its des
 - **THEN** `mr` leaves the release branch as it is
 
 ### Requirement: Nothing pending
-When no changeset is pending, `mr` SHALL close an open release merge request and leave the release branch as it is.
+When no changeset is pending, `mr` SHALL close an open release merge request, even a queued one, and leave the release branch as it is, because merging it would release changes that are no longer pending.
 
 #### Scenario: Pending changeset reverted
 - **WHEN** the only pending changeset is deleted by a revert and `mr` runs
 - **THEN** the open release merge request is closed with a note that nothing is pending
 
+#### Scenario: Queued release with nothing pending
+- **WHEN** the release merge request is assigned to the configured merge queue account and a revert deletes the only pending changeset
+- **THEN** `mr` closes the release merge request
+
 ### Requirement: Queued release merge request
-`mr` SHALL not update a release merge request that is in a merge train, set to merge automatically, or assigned to an account the configuration names as a merge queue, and SHALL say so; the next run after the merge request leaves that state updates it.
+While changesets are pending, `mr` SHALL not update a release merge request that is in a merge train, set to merge automatically, or assigned to an account the configuration names as a merge queue, and SHALL say so; the next run after the merge request leaves that state updates it.
 
 #### Scenario: Merge request in the queue
 - **WHEN** a person assigned the release merge request to the configured merge queue account and a new changeset lands
@@ -58,11 +62,22 @@ The tool SHALL never merge a merge request, approve it, set it to merge automati
 - **THEN** it refuses, names the variable, and explains that the release merge request needs a pipeline the job token cannot start
 
 ### Requirement: Merge settings warning
-`mr` SHALL read the project's merge settings and warn, in its output and in the release merge request's description, when a merge request pipeline does not test the tree that lands: neither fast-forward merges nor merged results pipelines nor merge trains.
+`mr` SHALL read the project's merge settings and warn, in its output and in the release merge request's description, when a merge request pipeline does not test the tree that lands. The pipeline tests that tree under fast-forward merges and under merge commits with semi-linear history, both of which require the source branch to contain the target branch, and under merged results pipelines or merge trains.
 
 #### Scenario: Merge commits without merged results
 - **WHEN** the project merges with merge commits and has merged results pipelines off
 - **THEN** `mr` warns that the release merge request's checks do not cover the tree that lands
+
+#### Scenario: Semi-linear history
+- **WHEN** the project merges with merge commits with semi-linear history and has merged results pipelines off
+- **THEN** `mr` does not warn
+
+### Requirement: Dry run of the release merge request
+`mr --dry-run` SHALL report the release commit's file changes and how it would create, update or close the release merge request, and SHALL write nothing to the forge.
+
+#### Scenario: Nothing written
+- **WHEN** `mr --dry-run` runs with pending changesets and no release merge request is open
+- **THEN** it lists the files the release commit would create, update and delete, says that it would create the release merge request, and the forge receives no write
 
 ### Requirement: Release merge request checks
 `goal` SHALL run in the release merge request's pipeline and fail when a pending changeset names a unit that the release publishes, when the manifest and the adapters' files disagree, or when a unit's adapter checks fail on what would be published. It SHALL then run the repository checks. Pending changesets for other units SHALL not fail it.
