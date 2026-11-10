@@ -1,11 +1,22 @@
-# The pipeline of cutwater on GitLab.com. A merge request pipeline checks the
-# OpenSpec specification; the jobs that build, test and release the tool come
-# with its code.
+# The pipeline of cutwater on GitLab.com.
+#
+# - A merge request pipeline checks the change: formatting, Clippy, the
+#   tests with the image's git and with the oldest supported git, the minimum
+#   supported Rust version, cargo-deny, the crate's package, the pipeline's
+#   scripts and the OpenSpec specification. A pipeline started by hand runs the same checks.
+# - A push to the default branch checks the OpenSpec specification.
+# - A schedule of the default branch runs cargo-deny, so that a new RustSec
+#   advisory fails without a change.
+#
+# The images are pinned by digest, the tools by version and checksum in
+# .gitlab/scripts/install-tools.sh, and the OpenSpec CLI with its
+# dependencies in .gitlab/openspec. Every job runs on the group's x86_64
+# Linux runner, tagged sakiori-oss-linux.
 
 workflow:
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
-    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $CI_PIPELINE_SOURCE == "push"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $CI_PIPELINE_SOURCE =~ /^(push|schedule)$/
     - if: $CI_COMMIT_BRANCH && $CI_PIPELINE_SOURCE =~ /^(web|api)$/
   # A newer commit never cancels a pipeline: the release commit's pipeline is
   # the only one that publishes its release.
@@ -13,17 +24,140 @@ workflow:
     on_new_commit: none
 
 variables:
+  # Rust 1.99.1 on Debian 13; rust-toolchain.toml names the same release.
+  RUST_IMAGE: rust:1.99.1-trixie@sha256:09027f873d45b8ecd1dc86f1fa13b7a62b875c961f017a0e331267b350430137
   NODE_IMAGE: node:24.22.2-trixie-slim@sha256:54f84b4cf8432b21aaffd5d3ce8d41e12cea0d10d33c09d2f3c9879d49d6b446
+  CARGO_HOME: $CI_PROJECT_DIR/.cargo
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  TOOLS: $CI_PROJECT_DIR/.tools
 
 default:
+  image: $RUST_IMAGE
   tags:
     - sakiori-oss-linux
+
+# The jobs that check a change: in merge request pipelines and pipelines
+# started by hand.
+.check:
+  needs: []
+  rules:
+    - if: $CI_PIPELINE_SOURCE =~ /^(merge_request_event|web|api)$/
+  cache:
+    key:
+      files:
+        - Cargo.lock
+      prefix: $CI_JOB_NAME_SLUG
+    paths:
+      - .cargo/registry/index
+      - .cargo/registry/cache
+      - target/
+
+fmt:
+  extends: .check
+  cache: []
+  script:
+    - rustup component add rustfmt
+    - cargo fmt --all --check
+
+clippy:
+  extends: .check
+  script:
+    - rustup component add clippy
+    - cargo clippy --all-targets --locked -- -D warnings
+
+test:
+  extends: .check
+  script:
+    - git --version
+    - cargo test --locked
+
+# The tests against the oldest git the README supports, built from source.
+test-git:
+  extends: .check
+  variables:
+    GIT_VERSION: 2.15.0
+    GIT_SHA256: 107116489f10b758b51af1c5dbdb9a274917b0fb67dc8eaefcdabc7bc3eb3e6a
+  cache:
+    - key: git-$GIT_VERSION-$RUST_IMAGE
+      paths:
+        - .git-build/
+    - key:
+        files:
+          - Cargo.lock
+        prefix: test
+      paths:
+        - .cargo/registry/index
+        - .cargo/registry/cache
+        - target/
+      policy: pull
+  script:
+    - |
+      prefix="$CI_PROJECT_DIR/.git-build/git-$GIT_VERSION"
+      if [ ! -x "$prefix/bin/git" ]; then
+        src=$(mktemp -d)
+        curl --fail --silent --show-error --location --proto '=https' --output "$src/git.tar.xz" \
+          "https://mirrors.edge.kernel.org/pub/software/scm/git/git-$GIT_VERSION.tar.xz"
+        echo "$GIT_SHA256  $src/git.tar.xz" | sha256sum --check --strict -
+        tar -C "$src" -xJf "$src/git.tar.xz"
+        make -C "$src/git-$GIT_VERSION" -j"$(nproc)" prefix="$prefix" \
+          NO_GETTEXT=YesPlease NO_TCLTK=YesPlease NO_PERL=YesPlease NO_PYTHON=YesPlease NO_CURL=YesPlease NO_OPENSSL=YesPlease install > /dev/null
+      fi
+      export PATH="$prefix/bin:$PATH"
+      git --version | grep -Fqx "git version $GIT_VERSION"
+    - cargo test --locked
+
+# Builds the crate with the toolchain that rust-version in Cargo.toml names,
+# the minimum supported Rust version.
+msrv:
+  extends: .check
+  script:
+    - version=$(sed -n 's/^rust-version = "\(.*\)"$/\1/p' Cargo.toml)
+    - rustup toolchain install "$version" --profile minimal
+    - cargo "+$version" build --all-targets --locked
+
+# Advisories (the RustSec database), licenses, bans and sources, as deny.toml
+# configures them; also in scheduled pipelines.
+deny:
+  extends: .check
+  rules:
+    - if: $CI_PIPELINE_SOURCE =~ /^(merge_request_event|web|api|schedule)$/
+  cache: []
+  script:
+    - .gitlab/scripts/install-tools.sh "$TOOLS" cargo-deny
+    # cargo-deny tells a yanked version only from cargo's cached index
+    # entries, which a fresh runner lacks; a dry-run update fetches the
+    # current entry of every locked crate without changing Cargo.lock.
+    - cargo update --dry-run
+    - '"$TOOLS/bin/cargo-deny" --locked check'
+
+# Packages the crate as cargo publish does and builds the packaged crate.
+package:
+  extends: .check
+  script:
+    - cargo package --locked
+
+# The pipeline's scripts: executable in git, as the jobs run them directly,
+# and clean for shellcheck.
+ci-scripts:
+  extends: .check
+  cache: []
+  script:
+    - |
+      modes=$(git ls-files -s -- '.gitlab/scripts/*.sh')
+      [ -n "$modes" ] || { echo "git lists no script under .gitlab/scripts" >&2; exit 1; }
+      plain=$(printf '%s\n' "$modes" | grep -v '^100755 ' || true)
+      [ -z "$plain" ] || { printf 'not executable in git (git update-index --chmod=+x):\n%s\n' "$plain" >&2; exit 1; }
+    - .gitlab/scripts/install-tools.sh "$TOOLS" shellcheck
+    - '"$TOOLS/bin/shellcheck" .gitlab/scripts/*.sh'
 
 # The OpenSpec CLI and its whole dependency tree, as
 # .gitlab/openspec/package-lock.json pins them with their integrity hashes;
 # none of them needs an install script.
 openspec:
   image: $NODE_IMAGE
+  rules:
+    - if: $CI_PIPELINE_SOURCE != "schedule"
   variables:
     # The CLI reports usage to its authors unless told not to.
     OPENSPEC_TELEMETRY: "0"

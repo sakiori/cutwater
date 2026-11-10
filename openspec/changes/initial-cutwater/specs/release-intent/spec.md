@@ -12,11 +12,18 @@ The tool SHALL read the repository's settings from `.cutwater/config.toml`: the 
 - **THEN** every command refuses, naming the setting and its line
 
 ### Requirement: Units
-A unit SHALL be what is versioned and released as one: an npm package, a Maven aggregator with the modules that share its version, or a Cargo crate. Each unit SHALL have a name unique in the repository, a path, an adapter, the patterns of its shipped files and a tag template. Without patterns, a unit's shipped files SHALL be every file under its path.
+A unit SHALL be what is versioned and released as one: an npm package, a Maven aggregator with the modules that share its version, or a Cargo crate. Each unit SHALL have a name unique in the repository, a path, an adapter, the patterns of its shipped files and a tag template.
 
 #### Scenario: Duplicate unit name
 - **WHEN** two units have the same name
 - **THEN** every command refuses and names both paths
+
+### Requirement: Shipped files
+Without patterns, a unit's shipped files SHALL be every file under its path. With or without patterns, they SHALL never include the files of units nested under it or the tool's own `.changeset/` and `.cutwater/` directories.
+
+#### Scenario: Nested unit
+- **WHEN** a root crate at `.` has a workspace member `crates/core`, and a merge request changes only `crates/core/src/lib.rs`
+- **THEN** the change ships `core` and not the root crate
 
 ### Requirement: Unit discovery
 Units SHALL be either listed in the configuration or discovered by their adapter. A listed unit SHALL override a discovered one of the same name, and the configuration MAY exclude discovered units by name.
@@ -40,14 +47,14 @@ A fixed group SHALL name two or more units that always share one version. A unit
 - **THEN** every command refuses and names the unit and both groups
 
 ### Requirement: Adoption
-`init` SHALL create `.cutwater/config.toml` and seed the version manifest with each discovered unit's released version, marked as seeded. It SHALL import the `fixed` and `ignore` settings of a Changesets `.changeset/config.json` and keep Changesets' tag format, `v{version}` for a single package and `{unit}@{version}` otherwise, and it SHALL refuse while that file declares `linked` groups or `.changeset/pre.json` exists, naming the setting to resolve first.
+`init` SHALL create `.cutwater/config.toml` and seed the version manifest with each discovered unit's released version, marked as seeded. It SHALL import the `fixed` and `ignore` settings of a Changesets `.changeset/config.json` and keep Changesets' tag format, `v{version}` for a single package and `{unit}@{version}` otherwise, and it SHALL refuse while that file declares `linked` groups or `.changeset/pre.json` or `.changeset/pre/` exists, naming what to resolve first.
 
 #### Scenario: Repository on Changesets
 - **WHEN** `init` runs in a pnpm workspace whose `.changeset/config.json` declares one fixed group and two pending changesets exist
 - **THEN** the configuration holds that fixed group and the `{unit}@{version}` tag format, the manifest holds every package's current version marked as seeded, and both changesets stay pending
 
 #### Scenario: Changesets prerelease in progress
-- **WHEN** `init` runs while `.changeset/pre.json` exists
+- **WHEN** `init` runs while `.changeset/pre.json` or `.changeset/pre/` exists
 - **THEN** it refuses and says to exit Changesets' prerelease mode first
 
 ### Requirement: Seeded versions
@@ -101,11 +108,15 @@ The exemption from the changeset rule SHALL apply only to a merge request whose 
 - **THEN** `check` fails as for any other merge request
 
 ### Requirement: Check without forge or registry
-`check` SHALL reach its verdict from the repository alone, without the forge API or any registry. It SHALL take the merge base from the CI variable that names the merge request's diff base, and SHALL fail with an explanation when the clone lacks that commit.
+`check` SHALL reach its verdict from the repository alone, without the forge API or any registry. It SHALL compare the merge request's committed tree with the target branch commit the pipeline merged, where the pipeline tests a merged result, and otherwise with the merge base of the merge request's diff base, taken from GitLab's CI variables. It SHALL fail with an explanation when the clone lacks that commit.
 
 #### Scenario: Shallow clone
 - **WHEN** `check` runs in a clone that does not contain the merge request's diff base
 - **THEN** it fails and says to raise the clone depth
+
+#### Scenario: Merged results pipeline
+- **WHEN** the target branch gained a release commit after the merge request's diff base, and `check` runs in a merged results pipeline of a merge request that changes only `api` with a changeset for it
+- **THEN** `check` passes and reports neither the release commit's files nor its changesets
 
 ### Requirement: Pending status
 `status` SHALL list the pending changesets and, for every unit they release, its current version, its next version and the reason: its own changesets, its fixed group, or a dependency whose new version its range does not accept. `status --json` SHALL print the same as JSON.

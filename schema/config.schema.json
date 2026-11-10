@@ -1,0 +1,166 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "cutwater configuration",
+  "description": "The settings of cutwater for one repository, in `.cutwater/config.toml`.",
+  "type": "object",
+  "properties": {
+    "cargo": {
+      "description": "The discovery of Cargo crates: the members of the workspace in the\nroot `Cargo.toml`, or the single crate it declares, as `cargo metadata`\nreports them, so cargo must be on the `PATH`.",
+      "$ref": "#/$defs/DiscoverySettings",
+      "default": {
+        "discover": false,
+        "exclude": []
+      }
+    },
+    "default-branch": {
+      "description": "The branch that releases are made from and that merge requests target.",
+      "type": "string",
+      "default": "main"
+    },
+    "group": {
+      "description": "Fixed groups: units that always share one version and one tag.",
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/GroupSettings"
+      }
+    },
+    "npm": {
+      "description": "The discovery of npm packages: pnpm workspaces (`pnpm-workspace.yaml`),\nnpm workspaces (`workspaces` in `package.json`) or a single\n`package.json`, at the repository root.",
+      "$ref": "#/$defs/DiscoverySettings",
+      "default": {
+        "discover": false,
+        "exclude": []
+      }
+    },
+    "release-branch": {
+      "description": "The branch that holds the release merge request's commit. A merge\nrequest from this branch of the same project is exempt from the\nchangeset rule of `check`.",
+      "type": "string",
+      "default": "cutwater/release"
+    },
+    "unit": {
+      "description": "Units listed by hand. A listed unit overrides the discovered unit of\nthe same name; it needs `path` and `adapter` only when no adapter\ndiscovers it.",
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/UnitSettings"
+      }
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "AdapterKind": {
+      "description": "The ecosystem adapter a unit belongs to.",
+      "oneOf": [
+        {
+          "description": "npm packages: pnpm and npm workspaces, or a single `package.json`.",
+          "type": "string",
+          "const": "npm"
+        },
+        {
+          "description": "Cargo crates: the members of a workspace, or a single crate.",
+          "type": "string",
+          "const": "cargo"
+        }
+      ]
+    },
+    "DiscoverySettings": {
+      "description": "How an adapter discovers units.",
+      "type": "object",
+      "properties": {
+        "discover": {
+          "description": "Whether the adapter's publishable packages are units. Private npm\npackages and crates with `publish = false` never are.",
+          "type": "boolean",
+          "default": false
+        },
+        "exclude": {
+          "description": "Names of discovered packages that are not units.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "GroupSettings": {
+      "description": "A fixed group: two or more units that always share one version.",
+      "type": "object",
+      "properties": {
+        "name": {
+          "description": "The group's name.",
+          "type": "string"
+        },
+        "tag": {
+          "description": "The template of the group's release tags, with the placeholders\n`{group}` and `{version}`. Default: `{group}-v{version}`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "units": {
+          "description": "The names of the group's units; a unit belongs to at most one group.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "units"
+      ]
+    },
+    "UnitSettings": {
+      "description": "A unit: what is versioned and released as one.",
+      "type": "object",
+      "properties": {
+        "adapter": {
+          "description": "The ecosystem adapter that versions and publishes the unit.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AdapterKind"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "name": {
+          "description": "The unit's name, unique in the repository: for a discovered unit, its\npackage's name.",
+          "type": "string"
+        },
+        "path": {
+          "description": "The unit's directory, relative to the repository root.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "shipped": {
+          "description": "Patterns of the files the unit ships, relative to its path, in the\nsyntax of `.gitignore`: a pattern naming a directory covers everything\nunder it, a pattern starting with `!` excludes, and the last pattern\nthat applies to a file decides. Without patterns, or with exclusions\nonly, every file under the path is shipped. Whatever the patterns\nsay, a unit never ships the files of units nested under it, nor\n`.changeset/` or `.cutwater/`.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "tag": {
+          "description": "The template of the unit's release tags, with the placeholders\n`{unit}` and `{version}`. Default: `v{version}` when the repository\nhas one unit, `{unit}-v{version}` otherwise. A member of a fixed group\ntakes the group's tags and sets none.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "name"
+      ]
+    }
+  }
+}

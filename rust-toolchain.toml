@@ -1,0 +1,8 @@
+# The toolchain that formats, lints, tests and builds the tool: the current
+# stable release, which the Rust image in .gitlab-ci.yml also carries, so that
+# rustfmt and Clippy judge the code the same way locally and in CI. The oldest
+# supported toolchain is rust-version in Cargo.toml.
+[toolchain]
+channel = "1.99.1"
+components = ["clippy", "rustfmt"]
+profile = "minimal"

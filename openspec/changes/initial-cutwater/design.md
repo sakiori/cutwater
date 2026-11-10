@@ -6,7 +6,7 @@
 
 ### Changeset files, not commit messages
 
-A version bump is a statement by the author, reviewed with the change it describes. A wrong bump is corrected by a later merge request that edits or deletes the pending changeset, and `check` shows reviewers such edits. Deriving versions from commit messages ties the release to message discipline and to history that is hard to amend. The file format is Changesets', so repositories using Changesets adopt the tool without touching their pending files. The `changesets` crate, which knope and Sampo also use, parses it.
+A version bump is a statement by the author, reviewed with the change it describes. A wrong bump is corrected by a later merge request that edits or deletes the pending changeset, and `check` shows reviewers such edits. Deriving versions from commit messages ties the release to message discipline and to history that is hard to amend. The file format is Changesets', so repositories using Changesets adopt the tool without touching their pending files. Like Changesets, the tool reads the front matter as YAML. The `changesets` crate that knope and Sampo use rejects empty front matter, keeps quotes in quoted names, and does not know `none`.
 
 Alternative: conventional commits, as release-please and semantic-release use. Rejected for the reasons above.
 

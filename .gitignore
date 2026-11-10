@@ -1,2 +1,5 @@
 /target
+/.cargo
+/.tools
+/.git-build
 /.gitlab/openspec/node_modules
