@@ -1,0 +1,28 @@
+{
+  "name": "@sakiori/cutwater-bin-linux-x64",
+  "version": "0.1.0",
+  "description": "The cutwater executable for Linux on x64, which the npm package cutwater runs",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://gitlab.com/sakiori-oss/cutwater.git",
+    "directory": "npm/cutwater-bin-linux-x64"
+  },
+  "os": [
+    "linux"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "files": [
+    "cutwater",
+    "THIRD-PARTY-NOTICES.txt",
+    "RUST-LIBRARY-COPYRIGHT.html"
+  ],
+  "scripts": {
+    "prepack": "node ../check-package.mjs linux x64"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

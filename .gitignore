@@ -4,3 +4,9 @@
 /.git-build
 /.gitlab/openspec/node_modules
 /.gitlab/verdaccio/node_modules
+/dist
+/npm/*/cutwater
+/npm/*/LICENSE
+/npm/*/THIRD-PARTY-NOTICES.txt
+/npm/*/RUST-LIBRARY-COPYRIGHT.html
+/cutwater-publish.json

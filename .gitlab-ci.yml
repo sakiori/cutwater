@@ -3,32 +3,95 @@
 # - A merge request pipeline checks the change: formatting, Clippy, the
 #   tests, which also run npm, pnpm and cargo, with the image's git and with
 #   the oldest supported git, publication to local npm and Cargo
-#   registries, the minimum supported Rust version,
-#   cargo-deny, the crate's package, the pipeline's scripts and the OpenSpec
-#   specification. A pipeline started by hand runs the same checks.
-# - A push to the default branch checks the OpenSpec specification.
+#   registries, the CI/CD component's steps with cosign, the minimum
+#   supported Rust version, cargo-deny, the crate's package, the pipeline's
+#   scripts and the OpenSpec specification, and the Linux release builds
+#   when the change can affect them. cutwater-check, of the CI/CD component,
+#   checks its changesets. A pipeline started by hand runs the same checks.
+# - The release merge request's pipeline builds the four release targets and
+#   runs cutwater-goal, which checks the crate and the npm packages that the
+#   release would publish.
+# - A pipeline of the default branch runs cutwater-mr, which keeps the
+#   release merge request, and cutwater-publish. In the push pipeline of a
+#   release commit, which `cutwater released` names in release-decision, the
+#   four targets are built, SHA256SUMS over their archives is signed, and
+#   cutwater-publish publishes the crate, the npm packages and the archives,
+#   then tags the commit <version> and creates the GitLab Release. Any other
+#   default branch pipeline, a later commit's or one scheduled or started by
+#   hand or by the API, even on the release commit, builds, signs and stages
+#   nothing; its cutwater-publish checks that releases are published, and
+#   fails where one is not, as its files are missing. It also checks the
+#   OpenSpec specification.
 # - A schedule of the default branch runs cargo-deny, so that a new RustSec
 #   advisory fails without a change.
 #
+# cutwater releases itself through its own CI/CD component, templates/
+# release.yml, with the executable that the tool job builds from the
+# pipeline's commit: a release commit's code publishes itself, and the first
+# release has no earlier one to download. README.md, Releasing cutwater,
+# describes the project settings and the credentials this relies on.
+#
 # The images are pinned by digest, the tools by version and checksum in
 # .gitlab/scripts/install-tools.sh, and the OpenSpec CLI and Verdaccio with
-# their dependencies in .gitlab/openspec and .gitlab/verdaccio. Every job runs on the group's x86_64
-# Linux runner, tagged sakiori-oss-linux.
+# their dependencies in .gitlab/openspec and .gitlab/verdaccio. Jobs run on
+# the group's x86_64 Linux runner, tagged sakiori-oss-linux, except the macOS
+# builds and cutwater-publish. Apple's SDK may be used only on Apple
+# hardware, so the macOS targets build natively on the group's Apple silicon
+# runner, tagged sakiori-oss-macos, which takes jobs of protected refs only
+# and runs each in a disposable macOS virtual machine. npm's trusted
+# publishing works only on GitLab.com's shared runners, so cutwater-publish
+# runs there.
 
 workflow:
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
-    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $CI_PIPELINE_SOURCE =~ /^(push|schedule)$/
+    # The Linux runner keeps a working copy that merge request jobs also use,
+    # so the default branch's pipelines, which release, clone.
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $CI_PIPELINE_SOURCE =~ /^(push|schedule|web|api)$/
+      variables:
+        GIT_STRATEGY: clone
     - if: $CI_COMMIT_BRANCH && $CI_PIPELINE_SOURCE =~ /^(web|api)$/
   # A newer commit never cancels a pipeline: the release commit's pipeline is
   # the only one that publishes its release.
   auto_cancel:
     on_new_commit: none
 
+# The CI/CD component from the pipeline's own commit, as GitLab documents for
+# testing a component in its project: it is included exactly as other
+# projects include it, its inputs checked against its spec.
+include:
+  - component: $CI_SERVER_FQDN/$CI_PROJECT_PATH/release@$CI_COMMIT_SHA
+    inputs:
+      image: $RUST_IMAGE
+      binary: .tools/bin/cutwater
+      prepare:
+        - .gitlab/scripts/install-tools.sh "$TOOLS" node
+        - export PATH="$TOOLS/bin:$PATH"
+        # NPM_TOKEN exists only for a package's first publication; npm reads
+        # it from the environment when it reads this file.
+        - |
+          if [ -n "${NPM_TOKEN:-}" ]; then
+            printf '//registry.npmjs.org/:_authToken=${NPM_TOKEN}\n' > "$HOME/.npmrc"
+          fi
+        - .gitlab/scripts/stage-npm.sh
+      publish-tags:
+        - saas-linux-small-amd64
+      npm-auth: trusted-publishing
+      crates-io-auth: trusted-publishing
+
+stages:
+  - build
+  - test
+  - sign
+  - deploy
+
 variables:
   # Rust 1.99.1 on Debian 13; rust-toolchain.toml names the same release.
   RUST_IMAGE: rust:1.99.1-trixie@sha256:09027f873d45b8ecd1dc86f1fa13b7a62b875c961f017a0e331267b350430137
   NODE_IMAGE: node:24.22.2-trixie-slim@sha256:54f84b4cf8432b21aaffd5d3ce8d41e12cea0d10d33c09d2f3c9879d49d6b446
+  # Cirrus Labs' macOS 26 base image with the Xcode Command Line Tools,
+  # gitlab-runner and Rosetta.
+  MACOS_IMAGE: ghcr.io/cirruslabs/macos-tahoe-base@sha256:4aaa751fa7538902d73c767f27a066fc87e83f183069da4e4b5022863abd4c77
   CARGO_HOME: $CI_PROJECT_DIR/.cargo
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: "0"
@@ -66,7 +129,7 @@ clippy:
   extends: .check
   script:
     - rustup component add clippy
-    - cargo clippy --all-targets --locked -- -D warnings
+    - cargo clippy --workspace --all-targets --locked -- -D warnings
 
 # The tests run npm, pnpm and cargo, as the tool does for npm and Cargo
 # units.
@@ -82,7 +145,7 @@ test:
     - .ecosystem-tools
   script:
     - git --version
-    - cargo test --locked
+    - cargo test --locked --workspace
 
 # The tests that publish to real registries on the runner: Verdaccio, pinned
 # with its dependency tree by .gitlab/verdaccio/package-lock.json, and
@@ -143,7 +206,7 @@ msrv:
   script:
     - version=$(sed -n 's/^rust-version = "\(.*\)"$/\1/p' Cargo.toml)
     - rustup toolchain install "$version" --profile minimal
-    - cargo "+$version" build --all-targets --locked
+    - cargo "+$version" build --workspace --all-targets --locked
 
 # Advisories (the RustSec database), licenses, bans and sources, as deny.toml
 # configures them; also in scheduled pipelines.
@@ -193,3 +256,239 @@ openspec:
   script:
     - npm ci --prefix .gitlab/openspec --ignore-scripts --no-audit --no-fund
     - .gitlab/openspec/node_modules/.bin/openspec validate --all --strict --no-interactive
+
+# The CI/CD component's steps, run with sh as GitLab's runners run them;
+# these tests run cosign itself, as install-tools.sh and the component pin
+# it, and shellcheck over the steps.
+test-component:
+  extends: .check
+  script:
+    - .gitlab/scripts/install-tools.sh "$TOOLS" cosign shellcheck
+    - export CUTWATER_TEST_COSIGN="$TOOLS/bin/cosign" CUTWATER_TEST_SHELLCHECK="$TOOLS/bin/shellcheck"
+    - cargo test --locked --test component -- --ignored
+
+# The executable the CI/CD component's jobs run, built from the pipeline's
+# own commit. Like every job that builds or publishes, it clones and restores
+# no cache, so that nothing a merge request job left in the runner's working
+# copy or cache reaches the executable that cutwater-mr and cutwater-publish
+# run with the bot's and the registries' credentials.
+tool:
+  stage: build
+  needs: []
+  cache: []
+  variables:
+    GIT_STRATEGY: clone
+  script:
+    - cargo build --locked --release
+    - mkdir -p .tools/bin
+    - cp target/release/cutwater .tools/bin/cutwater
+  artifacts:
+    paths:
+      - .tools/bin/cutwater
+    expire_in: 30 days
+
+# Whether the pipeline's commit releases cutwater: `cutwater released` names
+# the units whose release commit it is, and CUTWATER_RELEASE in the dotenv
+# report carries the answer to the release builds, sign and cutwater-publish,
+# which alone depend on it. It deepens a shallow clone from origin, which can
+# fail on its own, so cutwater-mr does not wait for it.
+release-decision:
+  stage: build
+  needs:
+    - job: tool
+  cache: []
+  variables:
+    GIT_STRATEGY: clone
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  script:
+    - |
+      released=$(.tools/bin/cutwater released)
+      printf '%s\n' "$released"
+      release=false
+      [ -z "$released" ] || release=true
+      echo "CUTWATER_RELEASE=$release" > release.env
+  artifacts:
+    reports:
+      dotenv: release.env
+
+cutwater-check:
+  needs:
+    - job: tool
+
+cutwater-mr:
+  needs:
+    - job: tool
+
+# The release merge request's check packs the platform packages with the
+# executables of the release builds. The macOS builds exist in its pipeline
+# only when the release branch and the default branch are protected; without
+# them, stage-npm.sh fails and says why.
+cutwater-goal:
+  needs:
+    - job: tool
+    - job: build-linux
+    - job: build-darwin
+      optional: true
+
+# Publication takes the signed archives, which only the push pipeline of the
+# release commit has; any other pipeline's cutwater-publish stages nothing
+# (stage-npm.sh) and only checks: it passes where the release's tag and
+# Release exist and fails where the release is unpublished, as its assets
+# are missing.
+cutwater-publish:
+  needs:
+    - job: tool
+    - job: release-decision
+    - job: sign
+      optional: true
+  cache: []
+  variables:
+    GIT_STRATEGY: clone
+
+# The release builds and sign work only in the push pipeline of a commit that
+# releases cutwater, as release-decision decides with `cutwater released`, and in
+# the release merge request's pipeline, which builds for cutwater-goal. Their
+# rules create them in default branch pipelines only for a push that changes
+# the version manifest, which every release commit's push does: GitLab
+# decides on jobs before any job runs, so no rule can ask the tool, but a
+# push that leaves the manifest alone releases nothing, and the macOS runner
+# then starts no virtual machine. A pipeline started by hand or by the API
+# never builds or signs a release.
+.release-only:
+  script:
+    - |
+      if [ "${CI_COMMIT_BRANCH:-}" = "$CI_DEFAULT_BRANCH" ] && [ "${CUTWATER_RELEASE:-}" != true ]; then
+        echo "this commit releases nothing, so nothing is built or signed"
+        exit 0
+      fi
+
+# The release builds, by .gitlab/scripts/build-release.sh, with the
+# third-party notices that xtask writes with cargo-about and the toolchain's
+# rust-src component. The Linux targets are also built for a merge request
+# that can change the build, so that a release never meets a broken build for
+# the first time.
+.release-build:
+  stage: build
+  needs:
+    - job: release-decision
+      optional: true
+  interruptible: false
+  timeout: 1h
+  cache: []
+  variables:
+    GIT_STRATEGY: clone
+  artifacts:
+    paths:
+      - dist/
+    expire_in: 30 days
+
+build-linux:
+  extends: .release-build
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_SOURCE_BRANCH_NAME == "cutwater/release" && $CI_MERGE_REQUEST_SOURCE_PROJECT_ID == $CI_PROJECT_ID && $CI_MERGE_REQUEST_PROJECT_ID == $CI_PROJECT_ID
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $CI_PIPELINE_SOURCE == "push"
+      changes:
+        - .cutwater/versions.toml
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes:
+        paths:
+          - Cargo.toml
+          - Cargo.lock
+          - rust-toolchain.toml
+          - src/**/*
+          - .gitlab/scripts/build-release.sh
+          - .gitlab/scripts/install-tools.sh
+          - .gitlab-ci.yml
+          - about.toml
+          - about.hbs
+          - deny.toml
+          - xtask/**/*
+        compare_to: refs/heads/main
+  parallel:
+    matrix:
+      - TARGET:
+          - x86_64-unknown-linux-musl
+          - aarch64-unknown-linux-musl
+  script:
+    - !reference [.release-only, script]
+    - rustup target add "$TARGET"
+    - rustup component add rust-src
+    - .gitlab/scripts/install-tools.sh "$TOOLS" zig cargo-zigbuild cargo-about
+    - export PATH="$TOOLS/bin:$PATH"
+    - .gitlab/scripts/build-release.sh "$TARGET"
+
+# Each job runs in a virtual machine cloned from MACOS_IMAGE and deleted
+# after it; the pinned rustup-init installs the toolchain of
+# rust-toolchain.toml into the job's directory. The runner takes jobs of
+# protected refs only: the release commit's, and the release merge
+# request's when the project lets merge request pipelines between protected
+# branches use protected runners. Only Maintainers, the bot among them, push
+# the protected release branch, which cutwater-mr writes from the default
+# branch.
+build-darwin:
+  extends: .release-build
+  image: $MACOS_IMAGE
+  tags:
+    - sakiori-oss-macos
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_SOURCE_BRANCH_NAME == "cutwater/release" && $CI_MERGE_REQUEST_SOURCE_PROJECT_ID == $CI_PROJECT_ID && $CI_MERGE_REQUEST_PROJECT_ID == $CI_PROJECT_ID && $CI_MERGE_REQUEST_SOURCE_BRANCH_PROTECTED == "true" && $CI_MERGE_REQUEST_TARGET_BRANCH_PROTECTED == "true"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $CI_PIPELINE_SOURCE == "push"
+      changes:
+        - .cutwater/versions.toml
+  variables:
+    RUSTUP_HOME: $CI_PROJECT_DIR/.rustup
+  parallel:
+    matrix:
+      - TARGET:
+          - aarch64-apple-darwin
+          - x86_64-apple-darwin
+  script:
+    - |
+      case "${CI_COMMIT_REF_PROTECTED:-}-${CI_MERGE_REQUEST_SOURCE_BRANCH_PROTECTED:-}-${CI_MERGE_REQUEST_TARGET_BRANCH_PROTECTED:-}" in
+        true-*-* | *-true-true) ;;
+        *) echo "the macOS builds run only for protected refs" >&2; exit 1 ;;
+      esac
+    - !reference [.release-only, script]
+    - .gitlab/scripts/install-tools.sh "$TOOLS" rustup cargo-about
+    - '"$TOOLS/bin/rustup-init" -y --quiet --no-modify-path --profile minimal --default-toolchain none'
+    - export PATH="$CARGO_HOME/bin:$TOOLS/bin:$PATH"
+    - rustup toolchain install
+    - rustup target add "$TARGET"
+    - rustup component add rust-src
+    - .gitlab/scripts/build-release.sh "$TARGET"
+
+# Signs SHA256SUMS over the release archives with the GitLab ID token of the
+# default branch's pipeline, the identity the CI/CD component verifies. It
+# runs no build code. It is not the only job whose ID token Sigstore accepts:
+# cutwater-publish holds one for npm's provenance, and Sigstore's certificates
+# name the pipeline's configuration, not the job, so both sign with the same
+# identity (openspec/changes/initial-cutwater/design.md, Self-release).
+sign:
+  stage: sign
+  interruptible: false
+  cache: []
+  variables:
+    GIT_STRATEGY: clone
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $CI_PIPELINE_SOURCE == "push"
+      changes:
+        - .cutwater/versions.toml
+  needs:
+    - job: release-decision
+    - job: build-linux
+      artifacts: true
+    - job: build-darwin
+      artifacts: true
+  id_tokens:
+    SIGSTORE_ID_TOKEN:
+      aud: sigstore
+  script:
+    - !reference [.release-only, script]
+    - .gitlab/scripts/install-tools.sh "$TOOLS" cosign
+    - export PATH="$TOOLS/bin:$PATH"
+    - .gitlab/scripts/sign.sh
+  artifacts:
+    paths:
+      - dist/
+    expire_in: 30 days

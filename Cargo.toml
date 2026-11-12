@@ -13,6 +13,15 @@ keywords = ["release", "changeset", "monorepo", "gitlab", "versioning"]
 categories = ["command-line-utilities", "development-tools"]
 include = ["/src/", "/Cargo.lock", "/LICENSE", "/README.md"]
 
+# cargo-binstall installs the release archive of the target instead of
+# building the crate: cutwater-<version>-<target>.tar.gz with the executable
+# at its root (.gitlab/scripts/build-release.sh), through the permanent link
+# of the GitLab Release to it.
+[package.metadata.binstall]
+pkg-url = "{ repo }/-/releases/{ version }/downloads/{ name }-{ version }-{ target }.tar.gz"
+bin-dir = "{ bin }{ binary-ext }"
+pkg-fmt = "tgz"
+
 [dependencies]
 anyhow = "1.0.104"
 bstr = { version = "1.13.1", default-features = false, features = ["std"] }
@@ -49,3 +58,8 @@ expect-test = "1.5.1"
 form_urlencoded = "1.2.2"
 mockito = "1.7.2"
 predicates = "3.1.4"
+
+# `xtask` holds development tasks, such as generating the third-party notices
+# of the release archives, so that their dependencies stay out of the crate.
+[workspace]
+members = ["xtask"]

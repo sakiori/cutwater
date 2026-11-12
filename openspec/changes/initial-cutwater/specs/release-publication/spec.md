@@ -52,11 +52,15 @@ A unit whose publication fails SHALL not stop the publication of units that do n
 - **THEN** `publish` neither publishes nor tags `api`, fails, and says to retry once R's pipeline published `core`, whether R's pipeline has finished or still runs
 
 ### Requirement: Tags and Releases
-After a unit is published, `publish` SHALL tag the release commit from the unit's tag template and create its GitLab Release, with the version's changelog entry as notes. A fixed group SHALL get one tag and one Release once all its members are published, with every member's entry in the notes, and none while any member is unpublished.
+After a unit is published, `publish` SHALL tag the release commit from the unit's tag template and create its GitLab Release, with the version's changelog entry as notes. A fixed group SHALL get one tag and one Release once all its members are published, with every member's entry in the notes, and none while any member is unpublished. Members whose entries are identical SHALL share one section of the notes, under all their names.
 
 #### Scenario: Group partly published
 - **WHEN** a fixed group's first member was published and the second failed
 - **THEN** the group has no tag and no Release until a retry publishes the second member
+
+#### Scenario: Group members with the same entry
+- **WHEN** a fixed group releases `ui` and `web` with the same changelog entry and `docs` with another
+- **THEN** the notes have one section for `ui, web` and one for `docs`
 
 ### Requirement: Existing tags
 A tag that exists on the release commit without a Release SHALL get its Release. A tag that exists on another commit SHALL make `publish` fail and name it. Tags SHALL never be moved or deleted.
@@ -72,12 +76,33 @@ A unit MAY list release asset patterns. `publish` SHALL upload the matching file
 - **WHEN** a unit lists `dist/*.tar.gz` and CI built four archives before `publish`
 - **THEN** the four archives are in the generic package registry under the unit's version and its Release links all four
 
+### Requirement: Asset links
+The Release SHALL link each asset under its file name, which tools that install from Releases take as the downloaded file's name. Assets of the same file name of two members of a fixed group SHALL make `publish` fail before anything is published.
+
+#### Scenario: Two members with the same asset name
+- **WHEN** both members of a fixed group list an asset named `tool.tar.gz`
+- **THEN** `publish` fails, names both members, and publishes nothing
+
 ### Requirement: Registry names of assets
 A unit's registry name SHALL be its name with characters the generic package registry rejects replaced by `-`, unless the unit sets one. Two units with the same registry name SHALL make every command refuse.
 
 #### Scenario: Colliding scoped names
 - **WHEN** the units `@a/b-c` and `@a-b/c` both map to the same registry name
 - **THEN** every command refuses and names both units
+
+### Requirement: Releases of a commit
+`released` SHALL name the units whose release commit is HEAD, which the pipeline of HEAD publishes, with their versions, adapters and tags, without reaching GitLab or a registry, so that CI builds and signs release files only in that pipeline.
+
+#### Scenario: Later commit
+- **WHEN** `released` runs on a commit after the release commit of every unit
+- **THEN** it names no unit
+
+### Requirement: Cargo tokens reach cargo alone
+The tool SHALL pass the environment's Cargo registry tokens, `CARGO_REGISTRY_TOKEN` and `CARGO_REGISTRIES_<NAME>_TOKEN`, only to cargo, never to npm, pnpm, their lifecycle scripts or repository checks.
+
+#### Scenario: Release of npm packages and a crate
+- **WHEN** `publish` packs and publishes npm packages with a Cargo registry token in the environment
+- **THEN** neither npm nor a lifecycle script receives the token, and `cargo publish` does
 
 ### Requirement: Record of a run
 `publish --json` SHALL print what it published, uploaded and tagged, and what it found already present, so that later CI jobs, such as image builds, can act on it.
@@ -92,6 +117,10 @@ A unit's registry name SHALL be its name with characters the generic package reg
 #### Scenario: Bot not allowed to create the tag
 - **WHEN** release tags are protected for an access level the bot does not have
 - **THEN** `publish` fails before publishing anything and names the tag pattern and the bot's access level
+
+#### Scenario: Rule by role
+- **WHEN** release tags are protected for the Maintainer role, as every tier can express, and the bot is a Maintainer
+- **THEN** `publish` creates the tags and their Releases
 
 ### Requirement: Dry run
 `publish --dry-run` SHALL report what it would publish, upload and tag, and SHALL change nothing in any registry or on the forge.

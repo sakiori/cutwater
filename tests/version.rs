@@ -377,6 +377,34 @@ fn removal_rides_with_the_next_release() {
 
 /// A Cargo workspace whose `api` and `core` inherit its version as a fixed
 /// group, and whose `cli` has a version of its own.
+/// A changelog is titled with the package's name, as in Changesets, also
+/// where the unit has a name of its own.
+#[test]
+fn changelog_is_titled_with_the_package_name() {
+    let repo = Repo::with(
+        "[[unit]]\nname = \"cli-npm\"\npath = \"cli\"\nadapter = \"npm\"\n",
+        &[
+            (
+                ".cutwater/versions.toml",
+                "[units]\n\"cli-npm\" = \"1.0.0\"\n",
+            ),
+            (
+                "cli/package.json",
+                "{\n  \"name\": \"@acme/cli\",\n  \"version\": \"1.0.0\"\n}\n",
+            ),
+            (
+                ".changeset/a.md",
+                &changeset(&[("cli-npm", "minor")], "Add the export command."),
+            ),
+        ],
+    );
+    repo.cutwater().arg("version").assert().success();
+    assert_eq!(
+        repo.read("cli/CHANGELOG.md"),
+        "# @acme/cli\n\n## 1.1.0\n\n### Minor Changes\n\n- Add the export command.\n"
+    );
+}
+
 fn cargo_workspace() -> Repo {
     let repo = Repo::with(
         "[cargo]\ndiscover = true\n\n[[group]]\nname = \"sdk\"\nunits = [\"api\", \"core\"]\n",

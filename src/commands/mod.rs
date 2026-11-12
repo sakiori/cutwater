@@ -8,6 +8,7 @@ pub mod init;
 pub mod mr;
 pub mod pre;
 pub mod publish;
+pub mod released;
 pub mod status;
 pub mod version;
 
@@ -50,6 +51,28 @@ pub fn check_pipeline(command: &str, default_branch: &str) -> Result<()> {
     }
 }
 
+/// The release branch that the CI component's rules assume, from its
+/// `release-branch` input.
+const COMPONENT_RELEASE_BRANCH_VARIABLE: &str = "CUTWATER_RELEASE_BRANCH";
+
+/// Refuses a CI component whose `release-branch` input names another branch
+/// than the configuration: its rules would run `check` instead of `goal` in
+/// the release merge request's pipeline.
+fn check_component_release_branch(config: &Config) -> Result<()> {
+    let assumed = std::env::var(COMPONENT_RELEASE_BRANCH_VARIABLE).unwrap_or_default();
+    if assumed.is_empty() || assumed == config.release_branch {
+        return Ok(());
+    }
+    anyhow::bail!(
+        "the CI component's `release-branch` input is `{assumed}` \
+         ({COMPONENT_RELEASE_BRANCH_VARIABLE}), but {} sets `release-branch` to `{}`, so the \
+         component would check the release merge request as any other; set both to the same \
+         branch",
+        crate::config::CONFIG_FILE,
+        config.release_branch
+    )
+}
+
 /// The repository the tool runs in, with its configuration and units.
 pub struct Repository {
     pub git: Git,
@@ -69,6 +92,8 @@ pub struct Inspected {
 pub struct Planned {
     pub plan: Plan,
     pub changesets: Vec<Changeset>,
+    /// The package name of each unit, by unit.
+    pub packages: BTreeMap<String, String>,
     pub pre: Option<PreState>,
     pub manifest: Manifest,
 }
@@ -83,6 +108,7 @@ impl Repository {
     /// The repository of the working tree `git` is bound to.
     pub fn open_with(git: Git) -> Result<Repository> {
         let config = Config::load(git.root())?;
+        check_component_release_branch(&config)?;
         let units = Units::resolve(git.root(), &config)?;
         Ok(Repository { git, config, units })
     }
@@ -157,6 +183,11 @@ impl Repository {
         Ok(Planned {
             plan,
             changesets,
+            packages: inspected
+                .declared
+                .iter()
+                .map(|(unit, declared)| (unit.clone(), declared.package.clone()))
+                .collect(),
             pre,
             manifest,
         })

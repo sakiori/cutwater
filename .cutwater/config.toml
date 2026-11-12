@@ -1,0 +1,44 @@
+# The settings of cutwater. Its JSON Schema, schema/config.schema.json in the
+# cutwater repository, describes them.
+
+[cargo]
+discover = true
+
+# The crate ships what its package holds and the CI/CD component, which the
+# release tag versions. Its release assets are the archives of the release
+# builds, their SHA256SUMS and its Sigstore bundle.
+[[unit]]
+name = "cutwater"
+shipped = ["/src/", "/Cargo.toml", "/Cargo.lock", "/LICENSE", "/README.md", "/templates/"]
+assets = ["dist/cutwater-*.tar.gz", "dist/SHA256SUMS", "dist/SHA256SUMS.sigstore.json"]
+
+# The npm package cutwater, which runs the executable of its platform package.
+[[unit]]
+name = "cutwater-npm"
+path = "npm/cutwater"
+adapter = "npm"
+
+[[unit]]
+name = "@sakiori/cutwater-bin-darwin-arm64"
+path = "npm/cutwater-bin-darwin-arm64"
+adapter = "npm"
+
+[[unit]]
+name = "@sakiori/cutwater-bin-darwin-x64"
+path = "npm/cutwater-bin-darwin-x64"
+adapter = "npm"
+
+[[unit]]
+name = "@sakiori/cutwater-bin-linux-arm64"
+path = "npm/cutwater-bin-linux-arm64"
+adapter = "npm"
+
+[[unit]]
+name = "@sakiori/cutwater-bin-linux-x64"
+path = "npm/cutwater-bin-linux-x64"
+adapter = "npm"
+
+[[group]]
+name = "cutwater"
+units = ["cutwater", "cutwater-npm", "@sakiori/cutwater-bin-darwin-arm64", "@sakiori/cutwater-bin-darwin-x64", "@sakiori/cutwater-bin-linux-arm64", "@sakiori/cutwater-bin-linux-x64"]
+tag = "{version}"

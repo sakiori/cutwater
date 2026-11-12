@@ -254,6 +254,35 @@ impl Owner {
     }
 }
 
+/// A unit whose release commit is HEAD.
+#[derive(Debug, Serialize)]
+pub struct ReleasedHere {
+    pub name: String,
+    pub version: String,
+    pub adapter: AdapterKind,
+    /// The tag of the unit's release, or of its fixed group's.
+    pub tag: String,
+}
+
+/// HEAD and the units whose release commit it is, in the order of
+/// publication: the units the pipeline of HEAD publishes. Versions seeded
+/// by `init` have no release commit.
+pub fn released_here(repo: &Repository) -> Result<(String, Vec<ReleasedHere>)> {
+    let run = Run::new(repo, true)?;
+    let units = run
+        .released
+        .iter()
+        .filter(|unit| unit.release_commit == run.head)
+        .map(|unit| ReleasedHere {
+            name: unit.name.clone(),
+            version: unit.version.clone(),
+            adapter: unit.adapter,
+            tag: run.owners[unit.owner].tag.clone(),
+        })
+        .collect();
+    Ok((run.head.clone(), units))
+}
+
 /// How bad a failure is: a broken rule exits with 1, a failure to reach a
 /// verdict or to carry it out with 2.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -593,6 +622,27 @@ impl<'r> Run<'r> {
                 Err(err) => self.fail(Severity::Violation, format!("{err:#}")),
             }
         }
+        // A release links each file under its name, which tools such as mise
+        // take as the downloaded file's name, so a name serves one file.
+        for &owner in &open {
+            let mut named: BTreeMap<&str, &str> = BTreeMap::new();
+            let mut clashes = Vec::new();
+            for &member in &self.owners[owner].members {
+                for (asset, _) in uploads.get(&member).into_iter().flatten() {
+                    let unit = self.released[member].name.as_str();
+                    if let Some(other) = named.insert(&asset.name, unit) {
+                        clashes.push(format!(
+                            "the release assets of `{other}` and `{unit}` are both named `{}`, \
+                             but the release `{}` links each file under its name; rename one",
+                            asset.name, self.owners[owner].tag
+                        ));
+                    }
+                }
+            }
+            for clash in clashes {
+                self.fail(Severity::Violation, clash);
+            }
+        }
         let answers = self.ask_registries(&members)?;
         let mut states: BTreeMap<usize, (UnitState, Option<String>, Option<String>)> =
             BTreeMap::new();
@@ -827,7 +877,6 @@ impl<'r> Run<'r> {
         notes: &str,
         uploads: &BTreeMap<usize, Vec<(Asset, bool)>>,
     ) -> Result<()> {
-        let group = self.owners[owner].group;
         let mut links = Vec::new();
         for &member in &self.owners[owner].members.clone() {
             let unit = self
@@ -859,16 +908,10 @@ impl<'r> Run<'r> {
                     ))?;
                     AssetState::Uploaded
                 };
-                let (name, path) = if group {
-                    let name = format!("{package}/{}", asset.name);
-                    (name.clone(), format!("/{name}"))
-                } else {
-                    (asset.name.clone(), format!("/{}", asset.name))
-                };
                 links.push(ReleaseLink {
-                    name,
+                    name: asset.name.clone(),
                     url: url.clone(),
-                    path,
+                    path: format!("/{}", asset.name),
                 });
                 self.record.assets.push(AssetRecord {
                     unit: unit.name.clone(),
@@ -1113,11 +1156,12 @@ impl<'r> Run<'r> {
         Ok(())
     }
 
-    /// The release notes of an owner: the changelog entry of its version,
-    /// each member's under its name for a fixed group.
+    /// The release notes of an owner: the changelog entry of its version;
+    /// for a fixed group, each distinct entry once, under the names of the
+    /// members that have it.
     fn notes(&self, owner: usize) -> Result<String> {
         let owner = &self.owners[owner];
-        let mut sections = Vec::new();
+        let mut entries = Vec::new();
         for &member in &owner.members {
             let unit = &self.released[member];
             let file = if unit.path == "." {
@@ -1133,12 +1177,18 @@ impl<'r> Run<'r> {
                     unit.version, owner.tag
                 )
             })?;
-            sections.push(if owner.group {
-                format!("## {}\n\n{entry}", unit.name)
-            } else {
-                entry
-            });
+            entries.push((unit.name.clone(), entry));
         }
+        let sections: Vec<String> = changelog::shared(entries)
+            .into_iter()
+            .map(|(names, entry)| {
+                if owner.group {
+                    format!("## {}\n\n{entry}", names.join(", "))
+                } else {
+                    entry
+                }
+            })
+            .collect();
         Ok(sections.join("\n\n"))
     }
 
@@ -1415,6 +1465,9 @@ mod tests {
             ("api-v1.0.0", "api-v1.0.01", false),
             ("*@*.*.*", "@acme/core@1.2.3", true),
             ("*@*.*.*", "@acme/core@1.2", false),
+            ("*.*.*", "1.2.3", true),
+            ("*.*.*", "1.2.3-rc.1", true),
+            ("*.*.*", "v1.2", false),
         ];
         for (pattern, tag, matches) in cases {
             assert_eq!(wildcard_match(pattern, tag), matches, "{pattern} {tag}");

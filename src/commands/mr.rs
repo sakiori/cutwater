@@ -356,7 +356,9 @@ fn merge_warning(settings: &MergeSettings) -> Option<String> {
 }
 
 /// The release merge request's description: every released unit's next
-/// version and changelog entry, in the order of publication.
+/// version and changelog entry, in the order of publication, with units
+/// whose releases are the same, as a fixed group's often are, under one
+/// heading.
 fn description(plan: &Plan, warning: Option<&str>) -> String {
     let mut text = String::from(
         "This merge request releases the pending changesets. Merging it is the release \
@@ -366,7 +368,7 @@ fn description(plan: &Plan, warning: Option<&str>) -> String {
     if let Some(warning) = warning {
         text.push_str(&format!("\n> **Warning:** {warning}\n"));
     }
-    for release in &plan.releases {
+    let releases = plan.releases.iter().map(|release| {
         let current = match &release.current {
             Some(current) => current.to_string(),
             None => "new".to_string(),
@@ -376,12 +378,14 @@ fn description(plan: &Plan, warning: Option<&str>) -> String {
             .iter()
             .map(|(name, version)| (name.clone(), version.to_string()))
             .collect();
-        text.push_str(&format!(
-            "\n## {} {current} → {}\n\n{}\n",
-            release.unit,
-            release.next,
-            changelog::body(release.dependency_bump, &release.entries, &dependencies)
-        ));
+        let body = changelog::body(release.dependency_bump, &release.entries, &dependencies);
+        (
+            release.unit.clone(),
+            format!("{current} → {}\n\n{body}", release.next),
+        )
+    });
+    for (units, release) in changelog::shared(releases) {
+        text.push_str(&format!("\n## {} {release}\n", units.join(", ")));
     }
     text
 }

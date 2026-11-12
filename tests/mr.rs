@@ -463,6 +463,55 @@ fn release_commit(origin: &Repo, parent: &str, released: bool) -> String {
     head
 }
 
+/// Members of a fixed group whose releases are the same appear once in the
+/// description, under all their names; the others keep their own section.
+#[test]
+fn identical_releases_of_a_group_are_described_once() {
+    let repo = Repo::with(
+        "[npm]\ndiscover = true\n\n[[group]]\nname = \"ui-kit\"\nunits = [\"docs\", \"ui\", \"web\"]\n",
+        &[
+            (
+                "package.json",
+                "{\n  \"name\": \"root\",\n  \"private\": true,\n  \"workspaces\": [\"docs\", \"ui\", \"web\"]\n}\n",
+            ),
+            (
+                ".cutwater/versions.toml",
+                "[units]\ndocs = \"2.1.0\"\nui = \"2.1.0\"\nweb = \"2.1.0\"\n",
+            ),
+            (
+                "docs/package.json",
+                "{\"name\": \"docs\", \"version\": \"2.1.0\"}\n",
+            ),
+            (
+                "ui/package.json",
+                "{\"name\": \"ui\", \"version\": \"2.1.0\"}\n",
+            ),
+            (
+                "web/package.json",
+                "{\"name\": \"web\", \"version\": \"2.1.0\"}\n",
+            ),
+            (
+                ".changeset/dark-theme.md",
+                "---\nui: minor\nweb: minor\n---\n\nAdd the dark theme.\n",
+            ),
+            (
+                ".changeset/theme-docs.md",
+                "---\ndocs: minor\n---\n\nDocument the dark theme.\n",
+            ),
+        ],
+    );
+    let tip = repo.git(&["rev-parse", "HEAD"]);
+    let description = release_description(&repo, &tip);
+    assert!(
+        description.contains(
+            "\n## docs 2.1.0 → 2.2.0\n\n### Minor Changes\n\n- Document the dark theme.\n\n\
+             ## ui, web 2.1.0 → 2.2.0\n\n### Minor Changes\n\n- Add the dark theme.\n"
+        ),
+        "{description}"
+    );
+    assert!(!description.contains("## ui 2.1.0"), "{description}");
+}
+
 #[test]
 fn the_same_release_is_not_written_twice() {
     let origin = package();

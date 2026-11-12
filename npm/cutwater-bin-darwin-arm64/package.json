@@ -1,0 +1,28 @@
+{
+  "name": "@sakiori/cutwater-bin-darwin-arm64",
+  "version": "0.1.0",
+  "description": "The cutwater executable for macOS on arm64, which the npm package cutwater runs",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://gitlab.com/sakiori-oss/cutwater.git",
+    "directory": "npm/cutwater-bin-darwin-arm64"
+  },
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "arm64"
+  ],
+  "files": [
+    "cutwater",
+    "THIRD-PARTY-NOTICES.txt",
+    "RUST-LIBRARY-COPYRIGHT.html"
+  ],
+  "scripts": {
+    "prepack": "node ../check-package.mjs darwin arm64"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

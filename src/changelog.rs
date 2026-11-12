@@ -76,6 +76,22 @@ fn item(text: &str) -> String {
     item
 }
 
+/// Each distinct text of `sections`, in the order of its first unit, with
+/// the names of every unit it belongs to: the members of a fixed group often
+/// release the same changes, which the notes then give once.
+pub fn shared<T: PartialEq>(
+    sections: impl IntoIterator<Item = (String, T)>,
+) -> Vec<(Vec<String>, T)> {
+    let mut shared: Vec<(Vec<String>, T)> = Vec::new();
+    for (name, text) in sections {
+        match shared.iter_mut().find(|(_, other)| *other == text) {
+            Some((names, _)) => names.push(name),
+            None => shared.push((vec![name], text)),
+        }
+    }
+    shared
+}
+
 /// The changelog `existing`, or a new one titled `# <title>`, with
 /// `section` before its first version heading, or else after its first
 /// line, as Changesets places it.

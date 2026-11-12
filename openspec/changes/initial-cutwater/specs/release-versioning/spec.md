@@ -113,7 +113,7 @@ A new unit that joins a fixed group with released members SHALL be released with
 - **THEN** `api`'s files and the manifest hold 1.5.0, the workspace lockfile is refreshed by the package manager, and the changeset file is gone
 
 ### Requirement: Changelogs
-`version` SHALL prepend each released unit's entry to its `CHANGELOG.md`. By default an entry SHALL be headed by the version, group the changeset entries by bump, and name no commit hashes. A fixed group's members SHALL each get their own entry.
+`version` SHALL prepend each released unit's entry to its `CHANGELOG.md`. By default an entry SHALL be headed by the version, group the changeset entries by bump, and name no commit hashes. A fixed group's members SHALL each get their own entry. A new changelog SHALL be titled with the name of the unit's package, as its adapter reads it, as in Changesets, whatever the unit is called.
 
 #### Scenario: Entry of a minor release
 - **WHEN** `version` releases `api` 1.5.0 from one minor and one patch changeset

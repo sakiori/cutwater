@@ -117,11 +117,15 @@ fn release_commit_publishes_in_order_and_then_tags() {
 
     let assert = publish(&repo, &gitlab, &registry)
         .arg("--json")
+        .env("CARGO_REGISTRY_TOKEN", "cio-crates-io")
+        .env("CARGO_REGISTRIES_ACME_TOKEN", "acme-registry")
         .assert()
         .success()
         .stderr(contains("Published `core` 2.0.0"))
         .stderr(contains(TOKEN).not());
     create.expect(2).assert();
+    // npm, and the lifecycle scripts of packing, receive no Cargo token.
+    assert_eq!(registry.token_sightings(), "");
     let output = assert.get_output();
     assert!(!String::from_utf8_lossy(&output.stdout).contains(TOKEN));
 
@@ -168,6 +172,50 @@ fn release_commit_publishes_in_order_and_then_tags() {
     );
     assert_eq!(record["tags"][1]["tag"], json!("api-v1.4.3"));
     assert_eq!(record["tags"][1]["state"], json!("created"));
+}
+
+/// `released` names the units whose release commit is HEAD, which its
+/// pipeline publishes, without GitLab or a registry; a later commit
+/// releases none.
+#[test]
+fn released_names_the_units_of_the_release_commit() {
+    let (repo, _, release) = workspace();
+    repo.cutwater()
+        .arg("released")
+        .assert()
+        .success()
+        .stdout("core 2.0.0 npm\napi 1.4.3 npm\n");
+    let assert = repo
+        .cutwater()
+        .args(["released", "--json"])
+        .assert()
+        .success();
+    assert_eq!(
+        record(&assert.get_output().stdout),
+        json!({
+            "commit": release,
+            "units": [
+                {"name": "core", "version": "2.0.0", "adapter": "npm", "tag": "core-v2.0.0"},
+                {"name": "api", "version": "1.4.3", "adapter": "npm", "tag": "api-v1.4.3"}
+            ]
+        })
+    );
+    repo.write("README.md", "# acme\n");
+    let later = repo.commit("Document");
+    repo.cutwater()
+        .arg("released")
+        .assert()
+        .success()
+        .stdout("");
+    let assert = repo
+        .cutwater()
+        .args(["released", "--json"])
+        .assert()
+        .success();
+    assert_eq!(
+        record(&assert.get_output().stdout),
+        json!({"commit": later, "units": []})
+    );
 }
 
 #[test]
@@ -304,6 +352,107 @@ fn fixed_group_is_tagged_once_complete() {
     assert_eq!(registry.versions("ui"), ["2.1.0", "2.2.0"]);
 }
 
+/// A fixed group's release notes give members with the same entry one
+/// section under all their names, and the others their own.
+#[test]
+fn fixed_group_notes_share_identical_entries() {
+    let repo = Repo::with(
+        "[npm]\ndiscover = true\n\n[[group]]\nname = \"ui-kit\"\nunits = [\"docs\", \"ui\", \"web\"]\n",
+        &[
+            (
+                "package.json",
+                "{\n  \"name\": \"root\",\n  \"private\": true,\n  \"workspaces\": [\"docs\", \"ui\", \"web\"]\n}\n",
+            ),
+            (
+                ".cutwater/versions.toml",
+                "[units]\ndocs = \"2.1.0\"\nui = \"2.1.0\"\nweb = \"2.1.0\"\n",
+            ),
+            ("docs/package.json", &package_json("docs", "2.1.0", "")),
+            ("ui/package.json", &package_json("ui", "2.1.0", "")),
+            ("web/package.json", &package_json("web", "2.1.0", "")),
+        ],
+    );
+    repo.write(
+        ".cutwater/versions.toml",
+        "[units]\ndocs = \"2.2.0\"\nui = \"2.2.0\"\nweb = \"2.2.0\"\n",
+    );
+    for (unit, entry) in [
+        ("docs", "Document the dark theme."),
+        ("ui", "Add the dark theme."),
+        ("web", "Add the dark theme."),
+    ] {
+        repo.write(
+            &format!("{unit}/package.json"),
+            &package_json(unit, "2.2.0", ""),
+        );
+        repo.write(
+            &format!("{unit}/CHANGELOG.md"),
+            &format!("# {unit}\n\n## 2.2.0\n\n### Minor Changes\n\n- {entry}\n"),
+        );
+    }
+    repo.commit("Release");
+    let registry = Registry::new(&[
+        ("docs", &["2.1.0"]),
+        ("ui", &["2.1.0"]),
+        ("web", &["2.1.0"]),
+    ]);
+    let mut gitlab = GitLab::new();
+    gitlab.no_tag("v2.2.0");
+    let (create, releases) = gitlab.releases();
+    publish(&repo, &gitlab, &registry).assert().success();
+    create.expect(1).assert();
+    assert_eq!(
+        releases.json()[0]["description"],
+        json!(
+            "## docs\n\n### Minor Changes\n\n- Document the dark theme.\n\n\
+             ## ui, web\n\n### Minor Changes\n\n- Add the dark theme."
+        )
+    );
+}
+
+/// A release links each asset under its file name, so the members of a
+/// fixed group may not have assets of the same name.
+#[test]
+fn group_assets_of_the_same_name_are_refused() {
+    let repo = Repo::with(
+        "[npm]\ndiscover = true\n\n\
+         [[unit]]\nname = \"ui\"\nassets = [\"ui/dist/*.tar.gz\"]\n\n\
+         [[unit]]\nname = \"web\"\nassets = [\"web/dist/*.tar.gz\"]\n\n\
+         [[group]]\nname = \"kit\"\nunits = [\"ui\", \"web\"]\n",
+        &[
+            (
+                "package.json",
+                "{\n  \"name\": \"root\",\n  \"private\": true,\n  \"workspaces\": [\"ui\", \"web\"]\n}\n",
+            ),
+            (
+                ".cutwater/versions.toml",
+                "[units]\nui = \"1.0.0\"\nweb = \"1.0.0\"\n",
+            ),
+            ("ui/package.json", &package_json("ui", "1.0.0", "")),
+            ("web/package.json", &package_json("web", "1.0.0", "")),
+            ("ui/CHANGELOG.md", "# ui\n\n## 1.0.0\n\n- First.\n"),
+            ("web/CHANGELOG.md", "# web\n\n## 1.0.0\n\n- First.\n"),
+        ],
+    );
+    repo.write("ui/dist/tool.tar.gz", "ui");
+    repo.write("web/dist/tool.tar.gz", "web");
+    let registry = Registry::new(&[]);
+    let mut gitlab = GitLab::new();
+    gitlab.no_tag("v1.0.0");
+    gitlab.get("/api/v4/projects/7/packages", "[]");
+    let writes = gitlab.no_writes();
+    publish(&repo, &gitlab, &registry)
+        .assert()
+        .code(1)
+        .stderr(contains(
+            "the release assets of `ui` and `web` are both named `tool.tar.gz`",
+        ));
+    for mock in writes {
+        mock.assert();
+    }
+    assert_eq!(registry.versions("ui"), Vec::<String>::new());
+}
+
 #[test]
 fn existing_tags() {
     let (repo, first, release) = workspace();
@@ -408,6 +557,19 @@ fn protected_tags_the_bot_may_not_create() {
     let (create, _) = gitlab.releases();
     publish(&repo, &gitlab, &registry).assert().success();
     create.expect(2).assert();
+
+    // A rule by role alone, as every tier can write, allows a bot of that
+    // role.
+    let mut gitlab = GitLab::with(
+        bot,
+        40,
+        r#"[{"name": "*-v*", "create_access_levels": [{"id": 1, "access_level": 40}]}]"#,
+    );
+    gitlab.tag("core-v2.0.0", &release, true);
+    gitlab.no_tag("api-v1.4.3");
+    let (create, _) = gitlab.releases();
+    publish(&repo, &gitlab, &registry).assert().success();
+    create.expect(1).assert();
 
     // A rule naming the bot needs it to be a project member, even as an
     // instance administrator.
@@ -604,6 +766,54 @@ fn maintenance_release_is_superseded_and_prerelease_takes_its_label() {
     );
 }
 
+/// A pipeline that built no assets, such as one started by hand on the
+/// release commit, publishes nothing while the release is unpublished, and
+/// passes once its tag and Release prove it published.
+#[test]
+fn release_assets_missing_from_a_pipeline() {
+    let repo = Repo::with(
+        "[npm]\ndiscover = true\n\n[[unit]]\nname = \"@acme/cli\"\nassets = [\"dist/*.tar.gz\"]\n",
+        &[
+            ("package.json", &package_json("@acme/cli", "1.0.0", "")),
+            (
+                ".cutwater/versions.toml",
+                "[units]\n\"@acme/cli\" = \"1.0.0\"\n",
+            ),
+            (
+                "CHANGELOG.md",
+                "# @acme/cli\n\n## 1.0.0\n\n### Major Changes\n\n- First.\n",
+            ),
+        ],
+    );
+    let release = repo.git(&["rev-parse", "HEAD"]);
+    let registry = Registry::new(&[]);
+    let mut gitlab = GitLab::new();
+    gitlab.no_tag("v1.0.0");
+    let writes = gitlab.no_writes();
+    publish(&repo, &gitlab, &registry)
+        .assert()
+        .code(1)
+        .stderr(contains(
+            "the asset pattern `dist/*.tar.gz` of unit `@acme/cli` matches no file",
+        ));
+    for mock in writes {
+        mock.assert();
+    }
+    assert_eq!(registry.versions("@acme/cli"), Vec::<String>::new());
+
+    // The tag with its Release is proof enough: neither the registry nor
+    // the missing files are asked for.
+    let queries = registry.queries();
+    let mut gitlab = GitLab::new();
+    gitlab.tag("v1.0.0", &release, true);
+    let writes = gitlab.no_writes();
+    publish(&repo, &gitlab, &registry).assert().success();
+    for mock in writes {
+        mock.assert();
+    }
+    assert_eq!(registry.queries(), queries);
+}
+
 #[test]
 fn release_assets() {
     let repo = Repo::with(
@@ -737,12 +947,21 @@ fn cargo_crate() {
     gitlab.no_tag("v0.2.0");
     let (create, _) = gitlab.releases();
     publish(&repo, &gitlab, &registry)
+        .env("CARGO_REGISTRY_TOKEN", "cio-crates-io")
+        .env("CARGO_REGISTRIES_ACME_TOKEN", "acme-registry")
         .assert()
         .success()
         .stdout(contains(
             "Published `tool` 0.2.0 to the default Cargo registry.",
         ));
     create.expect(1).assert();
+    let sightings = registry.token_sightings();
+    for token in ["CARGO_REGISTRY_TOKEN", "CARGO_REGISTRIES_ACME_TOKEN"] {
+        assert!(
+            sightings.contains(&format!("cargo publish {token}")),
+            "{sightings}"
+        );
+    }
     assert!(
         registry
             .queries()

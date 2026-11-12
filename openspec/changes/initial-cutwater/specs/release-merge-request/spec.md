@@ -12,11 +12,15 @@
 - **THEN** `mr` applies the plan to B, so the release merge request carries B's changeset
 
 ### Requirement: Release merge request description
-The release merge request's title SHALL come from the configuration, and its description SHALL list every released unit's next version and changelog entry.
+The release merge request's title SHALL come from the configuration, and its description SHALL list every released unit's next version and changelog entry. Units whose releases are identical, from the same version to the same version with the same entry, SHALL share one section under all their names.
 
 #### Scenario: Description of two units
 - **WHEN** the plan releases `core` 2.0.0 and `api` 1.4.3
 - **THEN** the description lists both with their versions and entries
+
+#### Scenario: Fixed group with the same entry
+- **WHEN** the plan releases the members `ui` and `web` of a fixed group from 2.1.0 to 2.2.0 with the same entry
+- **THEN** the description has one section `ui, web 2.1.0 → 2.2.0` with that entry
 
 ### Requirement: Unchanged release
 `mr` SHALL not write the release branch when the file changes it would commit equal those of the release branch's commit and either that commit already sits on the default branch's tip or the project's merge setting does not require it to, so that an unchanged release keeps its pipeline and approvals.

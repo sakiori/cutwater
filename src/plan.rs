@@ -837,6 +837,7 @@ mod tests {
                 name.to_string(),
                 UnitVersion {
                     name: name.to_string(),
+                    package: name.to_string(),
                     version: version.to_string(),
                     holds_release: true,
                     location: Location {

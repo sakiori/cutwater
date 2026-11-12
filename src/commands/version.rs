@@ -264,7 +264,11 @@ pub fn changes(repo: &Repository, planned: &Planned) -> Result<Changes> {
         );
         writes.insert(
             file,
-            changelog::prepend(existing.as_deref(), &release.unit, &section),
+            changelog::prepend(
+                existing.as_deref(),
+                planned.packages.get(&release.unit).unwrap_or(&release.unit),
+                &section,
+            ),
         );
     }
 

@@ -1,0 +1,452 @@
+spec:
+  component: [version, reference]
+  inputs:
+    image:
+      description: >-
+        The image the jobs run in. It needs a POSIX shell, git 2.15 or newer, curl, tar,
+        gzip and sha256sum or shasum, and the tools of the repository's ecosystems:
+        cargo for Cargo units, npm or pnpm for npm units.
+    setup:
+      type: array
+      default: []
+      description: >-
+        Commands every job runs before the tool, after installing it: for example,
+        making pnpm or a Rust toolchain available.
+    prepare:
+      type: array
+      default: []
+      description: >-
+        Commands `cutwater-goal` and `cutwater-publish` run after `setup` and before
+        the tool: registry credentials, the workspace's installation, which packing
+        with lifecycle scripts needs, and files that CI built for the packages.
+    release-branch:
+      default: cutwater/release
+      regex: ^[^"\s]+$
+      description: >-
+        The branch of the release merge request, as `release-branch` in
+        .cutwater/config.toml names it; the tool refuses another.
+    check-stage:
+      default: test
+      description: The stage of `cutwater-check`.
+    goal-stage:
+      default: test
+      description: The stage of `cutwater-goal`.
+    mr-stage:
+      default: deploy
+      description: The stage of `cutwater-mr`.
+    publish-stage:
+      default: deploy
+      description: >-
+        The stage of `cutwater-publish`, which waits for the jobs of earlier stages.
+    publish-tags:
+      type: array
+      default: []
+      description: >-
+        The runner tags of `cutwater-publish`, in place of the pipeline's default
+        tags; none runs it untagged. npm's trusted publishing works only on
+        GitLab.com's shared runners, such as `saas-linux-small-amd64`.
+    environment:
+      default: cutwater-publish
+      regex: ^[^"\s]+$
+      description: >-
+        The environment `cutwater-publish` prepares, without deploying, to which
+        the bot token, the registry tokens and the trusted publishers are scoped,
+        so that no other job of the pipeline receives them.
+    mr-environment:
+      default: cutwater-mr
+      regex: ^[^"\s]+$
+      description: >-
+        The environment `cutwater-mr` prepares, without deploying, to which the
+        bot token is scoped.
+    npm-auth:
+      default: token
+      options: [token, trusted-publishing]
+      description: >-
+        How npm authenticates in `cutwater-publish`: `token`, from npm's
+        configuration or the environment, or `trusted-publishing`, with the job's
+        ID token for npm and, for provenance, for Sigstore.
+    crates-io-auth:
+      default: token
+      options: [token, trusted-publishing]
+      description: >-
+        How cargo authenticates to crates.io in `cutwater-publish`: `token`, from
+        CARGO_REGISTRY_TOKEN, or `trusted-publishing`, with a token that the job's
+        ID token is exchanged for when the commit releases a Cargo unit, and that
+        is revoked after the job's publication, or in `after_script` when the job
+        is canceled.
+    download-url:
+      default: https://gitlab.com/api/v4/projects/sakiori-oss%2Fcutwater/packages/generic/cutwater
+      regex: ^https?://[^'\s]+$
+      description: >-
+        Where the releases of cutwater lie, each in <version>/: the archive of
+        each platform, SHA256SUMS and SHA256SUMS.sigstore.json.
+    cosign-url:
+      default: https://github.com/sigstore/cosign/releases/download
+      regex: ^https?://[^'\s]+$
+      description: >-
+        Where cosign's releases lie, each in v<version>/; the component checks the
+        download against its own pinned SHA-256.
+    trusted-root:
+      default: ''
+      regex: ^[^'\s]*$
+      description: >-
+        A Sigstore trusted root file, relative to the project directory, for runners
+        that cannot reach Sigstore's public trust root; empty for Sigstore's own.
+    binary:
+      default: ''
+      regex: ^[^'\s]*$
+      description: >-
+        A cutwater executable the pipeline built, relative to the project directory,
+        which the jobs run instead of a downloaded release: cutwater's own pipeline
+        releases itself with it.
+---
+# The tool for every job: the release of the component's version, verified,
+# or the executable of the `binary` input. The first item defines the steps,
+# the second runs them.
+.cutwater-tool:
+  image: $[[ inputs.image ]]
+  variables:
+    CUTWATER_RELEASE_BRANCH: $[[ inputs.release-branch ]]
+  before_script:
+    - |
+      # The release target of this machine.
+      cutwater_target() {
+        case "$(uname -s)-$(uname -m)" in
+          Linux-x86_64 | Linux-amd64) echo x86_64-unknown-linux-musl ;;
+          Linux-aarch64 | Linux-arm64) echo aarch64-unknown-linux-musl ;;
+          Darwin-x86_64) echo x86_64-apple-darwin ;;
+          Darwin-arm64 | Darwin-aarch64) echo aarch64-apple-darwin ;;
+          *)
+            echo "cutwater has no release for $(uname -s) on $(uname -m)" >&2
+            return 1
+            ;;
+        esac
+      }
+
+      # <component version> <component reference>: the release version. GitLab
+      # sets the version only for a version of a CI/CD Catalog resource; an
+      # exact release tag, such as 1.2.3, names one too.
+      cutwater_version() {
+        cutwater_v=$1
+        case "$cutwater_v" in '' | null) cutwater_v=$2 ;; esac
+        if printf '%s\n' "$cutwater_v" |
+          grep -Eqx '(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?'; then
+          echo "$cutwater_v"
+          return 0
+        fi
+        echo "the component is included as @$2, which names no release of cutwater; include a release, such as @1.2.3, or set the binary input to an executable the pipeline built" >&2
+        return 1
+      }
+
+      cutwater_sha256() { # <file>
+        if command -v sha256sum > /dev/null 2>&1; then
+          sha256sum "$1" | cut -d ' ' -f 1
+        else
+          shasum -a 256 "$1" | cut -d ' ' -f 1
+        fi
+      }
+
+      cutwater_fetch() { # <url> <file>
+        curl --fail --silent --show-error --location --retry 4 --output "$2" "$1" || {
+          echo "cannot download $1" >&2
+          return 1
+        }
+      }
+
+      # <cosign url> <target> <dir>: downloads the pinned cosign into <dir>.
+      cutwater_cosign() {
+        cutwater_cosign_version=3.1.4
+        case "$2" in
+          x86_64-unknown-linux-musl) set -- "$1" cosign-linux-amd64 424e2c97d0b45fd7a6b608a87f090f35633f4c23ece5f092d48bba11aaf4bbfa "$3" ;;
+          aarch64-unknown-linux-musl) set -- "$1" cosign-linux-arm64 ade83b7aac62e131cacfe96d958948b2150cc9efec46a570a2649b8e27dedad2 "$3" ;;
+          x86_64-apple-darwin) set -- "$1" cosign-darwin-amd64 9d1e4abe2b6be279ed0d2ff706fde1ccd738747c834e3e6d44039c238867334f "$3" ;;
+          aarch64-apple-darwin) set -- "$1" cosign-darwin-arm64 9f9b8cd557cf2e5b3df3373a00baa005a86b02391e3e06dd0ce37b3a1533d3a4 "$3" ;;
+          *) echo "cosign is not pinned for $2" >&2; return 1 ;;
+        esac
+        cutwater_fetch "$1/v$cutwater_cosign_version/$2" "$4/cosign" || return 1
+        if [ "$(cutwater_sha256 "$4/cosign")" != "$3" ]; then
+          rm -f "$4/cosign"
+          echo "$1/v$cutwater_cosign_version/$2 is not cosign $cutwater_cosign_version: its SHA-256 differs from the pinned one" >&2
+          return 1
+        fi
+        chmod 0755 "$4/cosign"
+      }
+
+      # <cosign> <file> <bundle> <identity> <issuer> <trusted root or empty>
+      cutwater_verify() {
+        if [ -n "$6" ]; then
+          [ -f "$6" ] || { echo "the trusted root $6 is not a file" >&2; return 1; }
+          set -- "$1" "$2" "$3" "$4" "$5" --trusted-root "$6"
+        else
+          set -- "$1" "$2" "$3" "$4" "$5"
+        fi
+        cutwater_verify_cosign=$1 cutwater_verify_file=$2
+        shift 2
+        "$cutwater_verify_cosign" verify-blob --bundle "$1" --certificate-identity "$2" \
+          --certificate-oidc-issuer "$3" ${4+"$4"} ${5+"$5"} "$cutwater_verify_file" || {
+          echo "the signature of $cutwater_verify_file is not that of cutwater's release pipeline, $2" >&2
+          return 1
+        }
+      }
+
+      # <SHA256SUMS> <archive> <dir>: unpacks the archive's executable into
+      # <dir> when SHA256SUMS lists the archive with its checksum.
+      cutwater_unpack() {
+        cutwater_name=${2##*/}
+        cutwater_listed=$(awk -v name="$cutwater_name" '$2 == name || $2 == "*" name { print $1 }' "$1")
+        if [ -z "$cutwater_listed" ]; then
+          echo "SHA256SUMS does not list $cutwater_name" >&2
+          return 1
+        fi
+        if [ "$(cutwater_sha256 "$2")" != "$cutwater_listed" ]; then
+          echo "$cutwater_name does not have the checksum SHA256SUMS lists for it" >&2
+          return 1
+        fi
+        tar -xzf "$2" -C "$3" cutwater || {
+          echo "$cutwater_name holds no executable cutwater" >&2
+          return 1
+        }
+      }
+
+      # <download url> <component version> <component reference> <cosign url>
+      # <trusted root> <binary> <identity> <issuer>: puts cutwater on the PATH,
+      # in CUTWATER_HOME, outside the project directory so that no package
+      # takes it in.
+      cutwater_install() {
+        CUTWATER_HOME=$(mktemp -d "${TMPDIR:-/tmp}/cutwater.XXXXXX") || return 1
+        mkdir -p "$CUTWATER_HOME/bin"
+        if [ -n "$6" ]; then
+          [ -f "$6" ] || { echo "the binary input names $6, which is not a file" >&2; return 1; }
+          cp "$6" "$CUTWATER_HOME/bin/cutwater" && chmod 0755 "$CUTWATER_HOME/bin/cutwater" || return 1
+          PATH="$CUTWATER_HOME/bin:$PATH"
+          export CUTWATER_HOME PATH
+          echo "running $6: $(cutwater --version)"
+          return 0
+        fi
+        cutwater_install_version=$(cutwater_version "$2" "$3") || return 1
+        cutwater_install_target=$(cutwater_target) || return 1
+        cutwater_archive="cutwater-$cutwater_install_version-$cutwater_install_target.tar.gz"
+        cutwater_release="$1/$cutwater_install_version"
+        cutwater_work="$CUTWATER_HOME/download"
+        mkdir -p "$cutwater_work"
+        cutwater_fetch "$cutwater_release/$cutwater_archive" "$cutwater_work/$cutwater_archive" &&
+          cutwater_fetch "$cutwater_release/SHA256SUMS" "$cutwater_work/SHA256SUMS" &&
+          cutwater_fetch "$cutwater_release/SHA256SUMS.sigstore.json" "$cutwater_work/SHA256SUMS.sigstore.json" &&
+          cutwater_cosign "$4" "$cutwater_install_target" "$cutwater_work" &&
+          cutwater_verify "$cutwater_work/cosign" "$cutwater_work/SHA256SUMS" \
+            "$cutwater_work/SHA256SUMS.sigstore.json" "$7" "$8" "$5" &&
+          cutwater_unpack "$cutwater_work/SHA256SUMS" "$cutwater_work/$cutwater_archive" "$CUTWATER_HOME/bin" ||
+          return 1
+        rm -rf "$cutwater_work"
+        PATH="$CUTWATER_HOME/bin:$PATH"
+        export CUTWATER_HOME PATH
+        cutwater_reported=$(cutwater --version) || return 1
+        if [ "$cutwater_reported" != "cutwater $cutwater_install_version" ]; then
+          echo "the release $cutwater_install_version reports '$cutwater_reported'" >&2
+          return 1
+        fi
+        echo "installed $cutwater_reported for $cutwater_install_target, signed by cutwater's release pipeline"
+      }
+
+      # <crates.io tokens url> <command>...: runs the command with
+      # CARGO_REGISTRY_TOKEN set to a crates.io token exchanged for the job's ID
+      # token, then revokes the token. Neither token reaches the log or the
+      # command line of a process. The authorization lies where after_script,
+      # which runs in a shell of its own, finds it to revoke a token that a
+      # canceled job left.
+      cutwater_with_crates_io_token() {
+        cutwater_tokens=$1
+        shift
+        cutwater_agent="User-Agent: cutwater-ci-component (https://gitlab.com/sakiori-oss/cutwater)"
+        case "${CRATES_IO_ID_TOKEN:-}" in
+          '') echo "CRATES_IO_ID_TOKEN is not set, but crates.io's trusted publishing exchanges it for a token" >&2; return 1 ;;
+          *[!A-Za-z0-9._-]*) echo "CRATES_IO_ID_TOKEN is not a GitLab ID token" >&2; return 1 ;;
+        esac
+        cutwater_secrets="${TMPDIR:-/tmp}/cutwater-crates-io-${CI_JOB_ID:-local}"
+        rm -rf "$cutwater_secrets"
+        (umask 077 && mkdir "$cutwater_secrets") || return 1
+        cutwater_status=$(printf '{"jwt":"%s"}' "$CRATES_IO_ID_TOKEN" |
+          curl --silent --show-error --request POST --header 'Content-Type: application/json' \
+            --header "$cutwater_agent" --data-binary @- --output "$cutwater_secrets/response" \
+            --write-out '%{http_code}' "$cutwater_tokens") || cutwater_status=failed
+        case "$cutwater_status" in
+          2??) ;;
+          failed)
+            rm -rf "$cutwater_secrets"
+            echo "cannot reach $cutwater_tokens to exchange the job's ID token" >&2
+            return 1
+            ;;
+          *)
+            echo "crates.io did not exchange the job's ID token (HTTP $cutwater_status): $(head -c 2000 "$cutwater_secrets/response" 2>/dev/null)" >&2
+            rm -rf "$cutwater_secrets"
+            return 1
+            ;;
+        esac
+        cutwater_token=$(sed -n 's/^.*"token"[[:space:]]*:[[:space:]]*"\([A-Za-z0-9_-]\{1,\}\)".*$/\1/p' "$cutwater_secrets/response")
+        rm -f "$cutwater_secrets/response"
+        if [ -z "$cutwater_token" ]; then
+          rm -rf "$cutwater_secrets"
+          echo "crates.io answered the exchange without a token" >&2
+          return 1
+        fi
+        printf 'Authorization: Bearer %s\n' "$cutwater_token" > "$cutwater_secrets/authorization"
+        echo "exchanged the job's ID token for a crates.io token"
+        if CARGO_REGISTRY_TOKEN=$cutwater_token "$@"; then cutwater_result=0; else cutwater_result=$?; fi
+        cutwater_token=
+        cutwater_status=$(curl --silent --show-error --request DELETE \
+          --header @"$cutwater_secrets/authorization" --header "$cutwater_agent" \
+          --output /dev/null --write-out '%{http_code}' "$cutwater_tokens") || cutwater_status=failed
+        rm -rf "$cutwater_secrets"
+        case "$cutwater_status" in
+          2??) echo "revoked the crates.io token" ;;
+          *) echo "warning: crates.io did not revoke the token (HTTP $cutwater_status); it expires 30 minutes after the exchange" >&2 ;;
+        esac
+        return "$cutwater_result"
+      }
+
+      # <crates.io auth> <crates.io tokens url>: `cutwater publish`, whose record
+      # becomes cutwater-publish.json once it ends, so that no package takes
+      # the file in while it runs. A CARGO_REGISTRY_TOKEN, as a crate's first
+      # publication needs, takes the place of trusted publishing, and a commit
+      # that releases no Cargo unit exchanges no token, so that a crates.io
+      # outage cannot fail a pipeline that publishes no crate.
+      cutwater_publish() {
+        cutwater_record="$CUTWATER_HOME/publish.json"
+        cutwater_auth=$1
+        if [ "$cutwater_auth" = trusted-publishing ] && [ -n "${CARGO_REGISTRY_TOKEN:-}" ]; then
+          echo "warning: CARGO_REGISTRY_TOKEN is set, so cargo publishes with it instead of crates.io's trusted publishing; delete the variable once crates.io trusts this project's pipeline" >&2
+          cutwater_auth=token
+        fi
+        if [ "$cutwater_auth" = trusted-publishing ]; then
+          cutwater_released=$(cutwater released) || return 1
+          if ! printf '%s\n' "$cutwater_released" | awk '$3 == "cargo" { found = 1 } END { exit !found }'; then
+            echo "this commit releases no Cargo unit, so the job exchanges no crates.io token"
+            cutwater_auth=token
+          fi
+        fi
+        if [ "$cutwater_auth" = trusted-publishing ]; then
+          if cutwater_with_crates_io_token "$2" cutwater publish --json > "$cutwater_record"; then
+            cutwater_result=0
+          else
+            cutwater_result=$?
+          fi
+        elif cutwater publish --json > "$cutwater_record"; then
+          cutwater_result=0
+        else
+          cutwater_result=$?
+        fi
+        cp "$cutwater_record" cutwater-publish.json
+        return "$cutwater_result"
+      }
+    - cutwater_install '$[[ inputs.download-url ]]' '$[[ component.version ]]' '$[[ component.reference ]]' '$[[ inputs.cosign-url ]]' '$[[ inputs.trusted-root ]]' '$[[ inputs.binary ]]' 'https://gitlab.com/sakiori-oss/cutwater//.gitlab-ci.yml@refs/heads/main' 'https://gitlab.com'
+    - $[[ inputs.setup ]]
+
+# Merge request pipelines other than the release merge request's. The base
+# commit lies as far back as the merge request reaches, so the clone is full.
+cutwater-check:
+  extends: .cutwater-tool
+  stage: $[[ inputs.check-stage ]]
+  needs: []
+  interruptible: true
+  variables:
+    GIT_DEPTH: "0"
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_SOURCE_BRANCH_NAME == "$[[ inputs.release-branch ]]" && $CI_MERGE_REQUEST_SOURCE_PROJECT_ID == $CI_MERGE_REQUEST_PROJECT_ID && $CI_MERGE_REQUEST_PROJECT_ID == $CI_PROJECT_ID
+      when: never
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+  script:
+    - cutwater check
+
+# The release merge request's pipelines: from the release branch of this
+# project into this project.
+cutwater-goal:
+  extends: .cutwater-tool
+  stage: $[[ inputs.goal-stage ]]
+  interruptible: true
+  variables:
+    GIT_DEPTH: "0"
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_SOURCE_BRANCH_NAME == "$[[ inputs.release-branch ]]" && $CI_MERGE_REQUEST_SOURCE_PROJECT_ID == $CI_MERGE_REQUEST_PROJECT_ID && $CI_MERGE_REQUEST_PROJECT_ID == $CI_PROJECT_ID
+  script:
+    - $[[ inputs.prepare ]]
+    - cutwater goal
+
+# Default branch pipelines, one `mr` at a time; the project sets the
+# resource group to process the oldest pipeline first. A newer pipeline never
+# cancels it.
+cutwater-mr:
+  extends: .cutwater-tool
+  stage: $[[ inputs.mr-stage ]]
+  needs: []
+  interruptible: false
+  resource_group: cutwater-mr
+  environment:
+    name: $[[ inputs.mr-environment ]]
+    action: prepare
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  script:
+    - cutwater mr
+
+# Default branch pipelines, one `publish` at a time; the release commit's
+# pipeline is the only one that publishes its release, so a newer pipeline
+# never cancels it. Jobs that need it start once it succeeded and find the
+# record of its run in cutwater-publish.json.
+cutwater-publish:
+  extends:
+    - .cutwater-tool
+    - .cutwater-npm-$[[ inputs.npm-auth ]]
+    - .cutwater-crates-io-$[[ inputs.crates-io-auth ]]
+  stage: $[[ inputs.publish-stage ]]
+  tags: $[[ inputs.publish-tags ]]
+  interruptible: false
+  resource_group: cutwater-publish
+  environment:
+    name: $[[ inputs.environment ]]
+    action: prepare
+  variables:
+    CUTWATER_CRATES_IO_TOKENS: https://crates.io/api/v1/trusted_publishing/tokens
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  script:
+    - $[[ inputs.prepare ]]
+    - cutwater_publish '$[[ inputs.crates-io-auth ]]' "$CUTWATER_CRATES_IO_TOKENS"
+  artifacts:
+    when: always
+    paths:
+      - cutwater-publish.json
+
+# The ID tokens of each way to authenticate; a job asks only for those it uses.
+.cutwater-npm-token:
+  variables: {}
+
+.cutwater-npm-trusted-publishing:
+  id_tokens:
+    NPM_ID_TOKEN:
+      aud: npm:registry.npmjs.org
+    SIGSTORE_ID_TOKEN:
+      aud: sigstore
+
+.cutwater-crates-io-token:
+  variables: {}
+
+.cutwater-crates-io-trusted-publishing:
+  id_tokens:
+    CRATES_IO_ID_TOKEN:
+      aud: crates.io
+  # A job canceled while it held the exchanged token revokes it here; the
+  # token expires 30 minutes after the exchange in any case.
+  after_script:
+    - |
+      cutwater_secrets="${TMPDIR:-/tmp}/cutwater-crates-io-${CI_JOB_ID:-local}"
+      if [ -f "$cutwater_secrets/authorization" ]; then
+        cutwater_status=$(curl --silent --show-error --request DELETE \
+          --header @"$cutwater_secrets/authorization" \
+          --header "User-Agent: cutwater-ci-component (https://gitlab.com/sakiori-oss/cutwater)" \
+          --output /dev/null --write-out '%{http_code}' "$CUTWATER_CRATES_IO_TOKENS") || cutwater_status=failed
+        case "$cutwater_status" in
+          2??) echo "revoked the crates.io token that the job left" ;;
+          *) echo "warning: crates.io did not revoke the token the job left (HTTP $cutwater_status); it expires 30 minutes after the exchange" >&2 ;;
+        esac
+      fi
+      rm -rf "$cutwater_secrets"

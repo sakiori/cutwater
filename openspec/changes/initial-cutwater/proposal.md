@@ -47,4 +47,4 @@ None.
 - **Forge setup.** The project needs a bot that can push the protected release branch. On GitLab.com Free this is a bot user's personal access token, because project access tokens need Premium there. The project also needs a merge setting under which a merge request pipeline tests the tree that lands: fast-forward merges on any tier, or merged results pipelines or merge trains on Premium.
 - **Credentials.** Registry credentials, including the read credentials that private registries need for existence checks, stay with the CI environment.
 - **Trusted publishing.** npm trusted publishing works only on GitLab.com's shared runners, and crates.io trusted publishing only from GitLab.com.
-- **Self-release.** The tool is released by its own release merge request to GitLab Releases, crates.io and npm, with `vX.Y.Z` tags.
+- **Self-release.** The tool is released by its own release merge request to GitLab Releases, crates.io and npm, with `X.Y.Z` tags.

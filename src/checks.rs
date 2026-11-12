@@ -95,7 +95,7 @@ pub fn run(root: &Path, checks: &[&CheckSettings], input: &Input) -> Result<bool
             .expect("a check's command names a program");
         crate::outln!("Repository check `{name}`:")?;
         std::io::stdout().flush()?;
-        let mut child = Command::new(program)
+        let mut child = crate::adapter::without_cargo_tokens(&mut Command::new(program))
             .args(args)
             .current_dir(root)
             .stdin(Stdio::piped())

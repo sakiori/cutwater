@@ -222,7 +222,8 @@ fn isolated(mut cmd: Command, dir: &Path) -> Command {
 /// answer as the real tools do, and `npm publish <archive>` and `cargo
 /// publish --package <name>` add the version they publish, unless the
 /// package is set to fail. Every other command goes to the real tool. Each
-/// query and publication is logged.
+/// query and publication is logged, and so is every Cargo registry token
+/// each stand-in receives.
 pub struct Registry {
     dir: tempfile::TempDir,
 }
@@ -241,10 +242,16 @@ impl Registry {
         }
         let data = data.display();
         let log = dir.path().join("queries").display().to_string();
+        let tokens = dir.path().join("tokens").display().to_string();
+        let sightings = |tool: &str| {
+            format!(
+                "env | sed -n 's/^\\(CARGO_REGISTR[A-Z0-9_]*TOKEN\\)=.*/\\1/p' | \\\n  while read -r name; do echo \"{tool} $1 $name\" >> '{tokens}'; done\n"
+            )
+        };
         let real = |tool: &str| which::which(tool).unwrap().display().to_string();
         let npm = format!(
             r#"#!/bin/sh
-if [ "$1" = view ]; then
+{npm_tokens}if [ "$1" = view ]; then
   echo "npm $*" >> '{log}'
   file="{data}/$(printf '%s' "$2" | tr / %)"
   if [ ! -f "$file" ]; then
@@ -273,11 +280,12 @@ if [ "$1" = publish ]; then
 fi
 exec '{}' "$@"
 "#,
-            real("npm")
+            real("npm"),
+            npm_tokens = sightings("npm")
         );
         let cargo = format!(
             r#"#!/bin/sh
-if [ "$1" = info ]; then
+{cargo_tokens}if [ "$1" = info ]; then
   echo "cargo $*" >> '{log}'
   spec=$2; name=${{spec%%@*}}; version=
   case "$spec" in *@*) version=${{spec#*@}};; esac
@@ -303,7 +311,8 @@ if [ "$1" = publish ]; then
 fi
 exec '{cargo}' "$@"
 "#,
-            cargo = real("cargo")
+            cargo = real("cargo"),
+            cargo_tokens = sightings("cargo")
         );
         for (tool, script) in [("npm", npm), ("cargo", cargo)] {
             let path = bin.join(tool);
@@ -362,6 +371,12 @@ exec '{cargo}' "$@"
             &std::env::var_os("PATH").unwrap_or_default(),
         ));
         std::env::join_paths(paths).unwrap()
+    }
+
+    /// The Cargo registry tokens the stand-ins received, one line per
+    /// token and invocation: the tool, its first argument and the variable.
+    pub fn token_sightings(&self) -> String {
+        std::fs::read_to_string(self.dir.path().join("tokens")).unwrap_or_default()
     }
 
     /// The queries and publications the stand-ins answered, one per line.

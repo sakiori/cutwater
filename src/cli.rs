@@ -58,6 +58,11 @@ enum Command {
     /// commit and create the GitLab release; in later pipelines, check that
     /// earlier releases were published.
     Publish(PublishArgs),
+    /// Name the units this commit releases: those whose release commit is
+    /// HEAD, which the pipeline of this commit publishes, one per line with
+    /// its version and adapter. Reaches neither GitLab nor any registry; a
+    /// shallow clone is deepened from `origin` as `publish` deepens it.
+    Released(ReleasedArgs),
 }
 
 #[derive(Debug, Args)]
@@ -115,6 +120,13 @@ pub struct PublishArgs {
     pub dry_run: bool,
     /// Print the record of the run as JSON on standard output: what was
     /// published, uploaded and tagged, and what was found present.
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct ReleasedArgs {
+    /// Print the commit and its released units, with their tags, as JSON.
     #[arg(long)]
     pub json: bool,
 }
@@ -184,6 +196,7 @@ pub fn main() -> ExitCode {
         Command::Mr(args) => commands::mr::run(&args),
         Command::Goal(args) => commands::goal::run(&args),
         Command::Publish(args) => commands::publish::run(&args),
+        Command::Released(args) => commands::released::run(&args),
     };
     match result {
         Ok(code) => code,

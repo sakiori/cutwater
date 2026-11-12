@@ -122,6 +122,9 @@ pub struct Inspection {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UnitVersion {
     pub name: String,
+    /// The name the ecosystem knows the unit's package by, which titles its
+    /// changelog.
+    pub package: String,
     pub version: String,
     /// Whether the files hold the released version, which the manifest
     /// must then agree with, rather than one that leads to the next
@@ -478,6 +481,30 @@ const PLAIN_OUTPUT: [(&str, &str); 4] = [
     ("npm_config_color", "false"),
 ];
 
+/// Whether the environment variable `name` holds a Cargo registry token:
+/// `CARGO_REGISTRY_TOKEN` for crates.io, `CARGO_REGISTRIES_<NAME>_TOKEN` for
+/// another registry.
+fn is_cargo_token(name: &std::ffi::OsStr) -> bool {
+    name.to_str().is_some_and(|name| {
+        name == "CARGO_REGISTRY_TOKEN"
+            || name
+                .strip_prefix("CARGO_REGISTRIES_")
+                .is_some_and(|rest| rest.len() > "_TOKEN".len() && rest.ends_with("_TOKEN"))
+    })
+}
+
+/// Keeps the environment's Cargo registry tokens from `command`, which is
+/// not cargo: npm, pnpm, their lifecycle scripts and repository checks never
+/// receive them.
+pub fn without_cargo_tokens(command: &mut std::process::Command) -> &mut std::process::Command {
+    for (name, _) in std::env::vars_os() {
+        if is_cargo_token(&name) {
+            command.env_remove(name);
+        }
+    }
+    command
+}
+
 /// The captured result of an ecosystem tool, or the adapter error of a
 /// tool that cannot run, naming `file` and what the tool was run for, such
 /// as `asking the registry`.
@@ -487,6 +514,9 @@ fn run_tool(
     file: &str,
     purpose: &str,
 ) -> Result<std::process::Output, AdapterError> {
+    if tool != "cargo" {
+        without_cargo_tokens(command);
+    }
     command
         .envs(PLAIN_OUTPUT)
         .stdin(std::process::Stdio::null())
@@ -519,7 +549,11 @@ pub fn refresh(root: &Path, lockfile: &Lockfile) -> Result<(), AdapterError> {
         .command
         .split_first()
         .expect("a lockfile command names its tool");
-    let output = std::process::Command::new(tool)
+    let mut command = std::process::Command::new(tool);
+    if tool != "cargo" {
+        without_cargo_tokens(&mut command);
+    }
+    let output = command
         .args(args)
         .envs(PLAIN_OUTPUT)
         .current_dir(root.join(&lockfile.dir))
@@ -615,4 +649,25 @@ fn resolve_dir(base: &str, path: &str) -> Option<String> {
     } else {
         parts.join("/")
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cargo_tokens_by_name() {
+        for name in ["CARGO_REGISTRY_TOKEN", "CARGO_REGISTRIES_ACME_TOKEN"] {
+            assert!(is_cargo_token(name.as_ref()), "{name}");
+        }
+        for name in [
+            "CARGO_REGISTRIES_ACME_INDEX",
+            "CARGO_REGISTRIES__TOKEN",
+            "CARGO_REGISTRY_DEFAULT",
+            "CARGO_HOME",
+            "NPM_TOKEN",
+        ] {
+            assert!(!is_cargo_token(name.as_ref()), "{name}");
+        }
+    }
 }

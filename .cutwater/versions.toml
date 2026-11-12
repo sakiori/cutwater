@@ -1,0 +1,4 @@
+# The released version of every unit. Only `cutwater init` and `cutwater version`
+# write this file.
+
+[units]

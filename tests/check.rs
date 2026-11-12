@@ -250,6 +250,22 @@ fn release_merge_request_is_exempt() {
 }
 
 #[test]
+fn component_with_another_release_branch_is_refused() {
+    let repo = release_branch_change();
+    // The component would run `check`, not `goal`, in the release merge
+    // request's pipeline.
+    repo.cutwater()
+        .args(["check", "--base", "main"])
+        .env("CUTWATER_RELEASE_BRANCH", "release")
+        .assert()
+        .code(2)
+        .stderr(
+            contains("`release-branch` input is `release`")
+                .and(contains("`release-branch` to `cutwater/release`")),
+        );
+}
+
+#[test]
 fn fork_branch_named_like_the_release_branch_is_not_exempt() {
     let repo = release_branch_change();
     // The pipeline in the target project, and the one in the fork.

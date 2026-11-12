@@ -142,6 +142,7 @@ impl Adapter for Npm {
             }
             units.push(UnitVersion {
                 name: unit.name.clone(),
+                package: package.to_string(),
                 holds_release: true,
                 version: version.to_string(),
                 location: Location {

@@ -107,8 +107,15 @@ impl Adapter for Cargo {
                     format!("`{version}` is not a semantic version: {err}"),
                 )
             })?;
+            let package = string_at(manifest, &["package", "name"]).ok_or_else(|| {
+                AdapterError::new(
+                    &file,
+                    format!("unit `{}` needs a `package.name`", unit.name),
+                )
+            })?;
             units.push(UnitVersion {
                 name: unit.name.clone(),
+                package,
                 holds_release: true,
                 version,
                 location,
