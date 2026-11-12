@@ -34,23 +34,40 @@
 # The images are pinned by digest, the tools by version and checksum in
 # .gitlab/scripts/install-tools.sh, and the OpenSpec CLI and Verdaccio with
 # their dependencies in .gitlab/openspec and .gitlab/verdaccio. Jobs run on
-# the group's x86_64 Linux runner, tagged sakiori-oss-linux, except the macOS
-# builds and cutwater-publish. Apple's SDK may be used only on Apple
-# hardware, so the macOS targets build natively on the group's Apple silicon
-# runner, tagged sakiori-oss-macos, which takes jobs of protected refs only
-# and runs each in a disposable macOS virtual machine. npm's trusted
-# publishing works only on GitLab.com's shared runners, so cutwater-publish
-# runs there.
+# one of the group's two x86_64 Linux runners, except the macOS builds and
+# cutwater-publish: a pipeline that GitLab runs for a protected ref, the
+# default branch's and the release merge request's where the project gives
+# it protected runners, on the one tagged sakiori-oss-linux-protected, which
+# takes protected refs only, and every other pipeline, the other merge
+# request pipelines among them, on the one tagged sakiori-oss-linux. Apple's
+# SDK may be used only on Apple hardware, so the macOS targets build natively
+# on the group's Apple silicon runner, tagged sakiori-oss-macos, which takes
+# jobs of protected refs only and runs each in a disposable macOS virtual
+# machine. npm's trusted publishing works only on GitLab.com's shared
+# runners, so cutwater-publish runs there.
 
 workflow:
   rules:
-    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
-    # The Linux runner keeps a working copy that merge request jobs also use,
-    # so the default branch's pipelines, which release, clone.
-    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $CI_PIPELINE_SOURCE =~ /^(push|schedule|web|api)$/
+    # Merge request pipelines, the default branch's pushes and schedules, and
+    # a branch's pipelines started by hand or by the API run; no other
+    # pipeline does.
+    - if: $CI_COMMIT_TAG
+      when: never
+    - if: $CI_COMMIT_BRANCH && $CI_PIPELINE_SOURCE !~ /^(push|schedule|web|api)$/
+      when: never
+    - if: $CI_COMMIT_BRANCH && $CI_COMMIT_BRANCH != $CI_DEFAULT_BRANCH && $CI_PIPELINE_SOURCE =~ /^(push|schedule)$/
+      when: never
+    # GitLab gives a pipeline protected runners exactly when
+    # CI_COMMIT_REF_PROTECTED is true. The protected runner runs build and
+    # test code, dependencies' build scripts included, beside the jobs that
+    # hold credentials, so each of its jobs clones a fresh working copy.
+    - if: $CI_COMMIT_REF_PROTECTED == "true"
       variables:
+        LINUX_RUNNER: sakiori-oss-linux-protected
         GIT_STRATEGY: clone
-    - if: $CI_COMMIT_BRANCH && $CI_PIPELINE_SOURCE =~ /^(web|api)$/
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event" || $CI_COMMIT_BRANCH
+      variables:
+        LINUX_RUNNER: sakiori-oss-linux
   # A newer commit never cancels a pipeline: the release commit's pipeline is
   # the only one that publishes its release.
   auto_cancel:
@@ -100,7 +117,7 @@ variables:
 default:
   image: $RUST_IMAGE
   tags:
-    - sakiori-oss-linux
+    - $LINUX_RUNNER
 
 # The jobs that check a change: in merge request pipelines and pipelines
 # started by hand.
@@ -268,16 +285,14 @@ test-component:
     - cargo test --locked --test component -- --ignored
 
 # The executable the CI/CD component's jobs run, built from the pipeline's
-# own commit. Like every job that builds or publishes, it clones and restores
-# no cache, so that nothing a merge request job left in the runner's working
-# copy or cache reaches the executable that cutwater-mr and cutwater-publish
-# run with the bot's and the registries' credentials.
+# own commit. Like every job that builds or publishes, it restores no cache,
+# so that nothing another job's code left in a cache reaches the executable
+# that cutwater-mr and cutwater-publish run with the bot's and the
+# registries' credentials.
 tool:
   stage: build
   needs: []
   cache: []
-  variables:
-    GIT_STRATEGY: clone
   script:
     - cargo build --locked --release
     - mkdir -p .tools/bin
@@ -297,8 +312,6 @@ release-decision:
   needs:
     - job: tool
   cache: []
-  variables:
-    GIT_STRATEGY: clone
   rules:
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
   script:
@@ -343,8 +356,6 @@ cutwater-publish:
     - job: sign
       optional: true
   cache: []
-  variables:
-    GIT_STRATEGY: clone
 
 # The release builds and sign work only in the push pipeline of a commit that
 # releases cutwater, as release-decision decides with `cutwater released`, and in
@@ -376,8 +387,6 @@ cutwater-publish:
   interruptible: false
   timeout: 1h
   cache: []
-  variables:
-    GIT_STRATEGY: clone
   artifacts:
     paths:
       - dist/
@@ -469,8 +478,6 @@ sign:
   stage: sign
   interruptible: false
   cache: []
-  variables:
-    GIT_STRATEGY: clone
   rules:
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $CI_PIPELINE_SOURCE == "push"
       changes:

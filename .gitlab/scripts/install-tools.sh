@@ -2,7 +2,7 @@
 # Installs pinned tools into <dir> after verifying the SHA-256 checksum of
 # each download; there is no fallback to another source or to a build. The
 # executables go to <dir>/bin. The pipeline's jobs run on x86_64 Linux, the
-# group's runner and GitLab.com's shared runners, and the macOS builds on
+# group's runners and GitLab.com's shared runners, and the macOS builds on
 # Apple silicon; each tool is pinned for the hosts that run it. A new version
 # of a tool needs both its version and its checksums below; a checksum is the
 # download's SHA-256, as its release lists it and as a download shows it.
