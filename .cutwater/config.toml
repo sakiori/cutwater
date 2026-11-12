@@ -1,6 +1,11 @@
 # The settings of cutwater. Its JSON Schema, schema/config.schema.json in the
 # cutwater repository, describes them.
 
+# Merge requests land through the merge queue, the release merge request
+# too; `mr` leaves one assigned to it as it is.
+[gitlab]
+merge-queue = ["sakiori-merge"]
+
 [cargo]
 discover = true
 

@@ -1,12 +1,115 @@
 # cutwater
 
-`cutwater` releases the packages of a repository through one merge request that a bot keeps up to date. Authors state each change's version bump in changeset files, reviewed with the change. Merging the release merge request publishes every package whose version is missing from its registry, then tags it and creates the GitLab Release.
+`cutwater` releases the packages of a repository through one merge request that a bot keeps up to date. Authors state each change's version bump in a changeset file, reviewed with the change. Merging the release merge request publishes every package whose version is missing from its registry, in dependency order, and only then tags it and creates the GitLab Release.
 
-It is meant to cover npm (pnpm and npm workspaces, single packages), Maven (multi-module projects with independently versioned units, CI-friendly `${revision}` versions) and Cargo, on GitLab. `openspec/` holds the specification.
+It combines practices that other tools offer apart: changeset files in the format of [Changesets](https://github.com/changesets/changesets) instead of versions derived from commit messages, one release merge request that a bot maintains and never merges, and publication from the very commit that landed the release, for npm packages and Cargo crates of one repository together, on GitLab.
 
-## What works now
+cutwater supports npm packages (pnpm and npm workspaces, single packages) and Cargo crates (workspaces, single crates), released through GitLab, on GitLab.com or a self-managed instance. Yarn and Bun workspaces are refused. Maven is planned, as a change proposed in [`openspec/changes/`](https://gitlab.com/sakiori-oss/cutwater/-/tree/main/openspec/changes/). [`openspec/specs/`](https://gitlab.com/sakiori-oss/cutwater/-/tree/main/openspec/specs/) specifies what is implemented.
 
-The settings live in `.cutwater/config.toml`; [`schema/config.schema.json`](schema/config.schema.json) describes them for editors, and [`schema/versions.schema.json`](schema/versions.schema.json) the version manifest. A repository whose publishable npm packages and Cargo crates are its units needs only:
+## Install
+
+Each release of cutwater is a GitLab Release with the tag `<version>`, such as `1.2.3`, the crate `cutwater` on crates.io, and the npm package `cutwater`, which installs the executable for its platform from one of the packages `@sakiori/cutwater-bin-<os>-<cpu>`. The executables are built for Linux, statically linked against musl, and for macOS, on x86_64 and arm64.
+
+```sh
+cargo binstall cutwater                        # the release archive
+cargo install --locked cutwater                # built from the crate
+npm install --save-dev cutwater                # the npm package
+mise use gitlab:sakiori-oss/cutwater           # the release archive
+```
+
+In GitLab CI, the [CI/CD component](#the-gitlab-cicd-component) installs cutwater itself.
+
+Each archive and each platform package carries, beside the executable, `THIRD-PARTY-NOTICES.txt`, the licenses and notices of the crates it is built from, of the Rust toolchain's compiler-builtins and, on Linux, of musl and Zig, and `RUST-LIBRARY-COPYRIGHT.html`, the notices of the Rust standard library. The Release links the archives `cutwater-<version>-<target>.tar.gz`, `SHA256SUMS` and its Sigstore bundle, `SHA256SUMS.sigstore.json`, signed by the pipeline of cutwater's default branch:
+
+```sh
+cosign verify-blob --bundle SHA256SUMS.sigstore.json \
+  --certificate-identity https://gitlab.com/sakiori-oss/cutwater//.gitlab-ci.yml@refs/heads/main \
+  --certificate-oidc-issuer https://gitlab.com SHA256SUMS
+sha256sum --check --ignore-missing SHA256SUMS
+```
+
+To build it from source, with a Rust toolchain (`rust-toolchain.toml` names the one the project uses; `rust-version` in `Cargo.toml` is the oldest supported):
+
+```sh
+cargo install --locked --path .
+```
+
+## Quick start
+
+1. **Set the repository up.** On a clean checkout of the default branch:
+
+   ```sh
+   cutwater init
+   ```
+
+   `init` turns on discovery for the npm packages and Cargo crates it finds and asks each one's registry whether it lists the version the files declare; those versions become the released ones. For a package that was never published, `init` refuses and says so: declare each such package new, and run it again:
+
+   ```sh
+   cutwater init --new my-crate --new @acme/web
+   ```
+
+   Commit `.cutwater/config.toml` and `.cutwater/versions.toml`.
+
+2. **Describe a change.** On a branch that changes a package, add a changeset, which asks for the units, their bumps and the entry:
+
+   ```sh
+   cutwater add
+   ```
+
+   or names them without asking:
+
+   ```sh
+   cutwater add --unit my-crate:minor --message "Add the export command."
+   ```
+
+   Commit it with the change, and check the branch as its merge request pipeline will:
+
+   ```sh
+   git add .changeset
+   git commit -m "feat: add the export command"
+   cutwater check --base main
+   ```
+
+   A new package is first released once a changeset names it, at the version its files declare.
+
+3. **Add the CI/CD component** to `.gitlab-ci.yml`, by the tag of a release of cutwater, and keep default branch pipelines from being cancelled:
+
+   ```yaml
+   workflow:
+     auto_cancel:
+       on_new_commit: none
+
+   include:
+     - component: gitlab.com/sakiori-oss/cutwater/release@0.1.0
+       inputs:
+         image: node:24-trixie
+         setup:
+           - corepack enable
+         prepare:
+           - |
+             if [ -n "${NPM_TOKEN:-}" ]; then
+               printf '//registry.npmjs.org/:_authToken=${NPM_TOKEN}\n' > "$HOME/.npmrc"
+             fi
+           - pnpm install --frozen-lockfile
+   ```
+
+   This suits a pnpm workspace. The first command of `prepare` gives npm the token of step 4 where it is set; npm expands `${NPM_TOKEN}` when it reads the file. For an npm workspace or a single package, leave out `setup` and use `npm ci` in place of `pnpm install`; for Cargo crates, use an image with cargo, such as `rust:1-trixie`, and neither `setup` nor `prepare`. A repository with both needs an image with node and cargo, or a `setup` that installs the one its image lacks.
+
+4. **Set the project up**, as [Project settings](#project-settings) explains:
+
+   - a bot user with the Maintainer role, and its personal access token with the `api` scope in the masked, protected CI/CD variable `CUTWATER_GITLAB_TOKEN`, scoped to the environments `cutwater-*`;
+   - the default branch, the release tags and the release branch `cutwater/release` protected;
+   - a merge method under which the release merge request's pipeline checks the tree that lands;
+   - the registries' credentials, scoped to the environment `cutwater-publish`: `NPM_TOKEN`, which `prepare` writes into npm's configuration, and `CARGO_REGISTRY_TOKEN`. A package's first publication needs these tokens, as npm and crates.io add a trusted publisher only to a package that exists; from its second release on, their trusted publishing can replace them (`npm-auth`, `crates-io-auth`);
+   - the resource groups `cutwater-mr` and `cutwater-publish` set to process the oldest pipeline first.
+
+5. **Merge, and release.** When the change lands, `cutwater-mr` applies the pending changesets on the branch `cutwater/release` and opens the merge request **Release**, which lists every unit's next version and changelog entry; it keeps it up to date as more changes land. Its pipeline runs `cutwater-goal`, which checks what the release would publish. Merging it is the release: the pipeline of the commit that lands runs `cutwater-publish`, which publishes what the registries lack, in dependency order, then tags the commit and creates the GitLab Release. `cutwater status` and `cutwater version --dry-run` show the next release on any checkout.
+
+## Reference
+
+### Configuration
+
+The settings live in `.cutwater/config.toml`; [`schema/config.schema.json`](https://gitlab.com/sakiori-oss/cutwater/-/blob/main/schema/config.schema.json) describes them for editors, and [`schema/versions.schema.json`](https://gitlab.com/sakiori-oss/cutwater/-/blob/main/schema/versions.schema.json) the version manifest. A repository whose publishable npm packages and Cargo crates are its units needs only:
 
 ```toml
 [npm]
@@ -17,6 +120,8 @@ discover = true
 ```
 
 A unit ships every file under its directory, or the files its `shipped` patterns select, but never the files of a unit nested under it. Releases are tagged `v{version}` when the repository has one unit, or one fixed group of every unit, and `{unit}-v{version}` or `{group}-v{version}` otherwise; the `tag` settings of units, adapters and groups change that.
+
+### Commands
 
 - `cutwater init` sets a repository up: it turns on discovery for the npm packages and Cargo crates it finds and asks each one's registry, through `npm view` or `cargo info` with the repository's and the environment's settings, whether it lists the declared version. A listed version goes into `.cutwater/versions.toml`, the version manifest, as seeded; for any other answer `init` refuses, because an unreachable, replaced or denying registry looks like one without the package. `cutwater init --new <unit>` declares a unit that was never published, which gets no manifest entry, and `cutwater init --published <unit>` seeds a declared version the registry does not list, such as a yanked one, without asking. `init` writes every tag template it relies on into the configuration. In a repository on Changesets it imports the fixed groups, ignored packages and base branch of `.changeset/config.json`, names the settings it does not carry over, keeps Changesets' tag format for the npm units (`{unit}@{version}` in a workspace, `v{version}` for a single package), and leaves the pending changesets in place; it refuses while Changesets is in prerelease mode or declares linked groups. Crates that inherit `workspace.package.version` become one fixed group.
 - `cutwater add` creates a changeset file in `.changeset/`, in the format of [Changesets](https://github.com/changesets/changesets). In a terminal it asks for the units, their bumps and the entry, with the units the branch changed preselected. `cutwater add --unit api:minor --message "Add the export endpoint"` does the same without asking, and `cutwater add --empty` records that a change releases nothing.
@@ -54,13 +159,13 @@ A unit ships every file under its directory, or the files its `shipped` patterns
 
 `cutwater` exits with 1 when a rule is violated, such as a change without a changeset, and with 2 when it cannot reach a verdict: an invalid configuration or changeset, a failing git, or a missing tool.
 
-## The GitLab CI/CD component
+### The GitLab CI/CD component
 
 The component `release` runs the commands in the pipelines they belong to: `cutwater-check` runs `cutwater check` in every merge request pipeline but the release merge request's, `cutwater-goal` runs `cutwater goal` in the release merge request's pipelines, and `cutwater-mr` and `cutwater-publish` run `cutwater mr` and `cutwater publish` in every pipeline of the default branch. It needs GitLab 18.7 or newer. Include it by a release tag of cutwater, a plain version such as `1.2.3`:
 
 ```yaml
 include:
-  - component: gitlab.com/sakiori-oss/cutwater/release@1.2.3
+  - component: gitlab.com/sakiori-oss/cutwater/release@0.1.0
     inputs:
       image: node:24-trixie
       setup:
@@ -82,7 +187,7 @@ The inputs:
 - `check-stage`, `goal-stage` (`test`), `mr-stage`, `publish-stage` (`deploy`): the jobs' stages. `cutwater-check` and `cutwater-mr` start at once; `cutwater-goal` and `cutwater-publish` wait for the jobs of earlier stages and take their artifacts.
 - `publish-tags` (none): the runner tags of `cutwater-publish`, in place of the pipeline's default tags; without tags it runs untagged. npm's trusted publishing works only on GitLab.com's shared runners, such as `saas-linux-small-amd64`.
 - `environment` (`cutwater-publish`) and `mr-environment` (`cutwater-mr`): the environments `cutwater-publish` and `cutwater-mr` prepare, without deploying. CI/CD variables scoped to them reach these jobs alone: the bot token both, the registry tokens `cutwater-publish`; trusted publishers can name `cutwater-publish`.
-- `npm-auth` (`token`): `token` leaves npm's authentication to its configuration and the environment, which `prepare` can write; `trusted-publishing` gives `cutwater-publish` the ID token npm's trusted publishing exchanges, `NPM_ID_TOKEN`, and the one its provenance needs, `SIGSTORE_ID_TOKEN`.
+- `npm-auth` (`token`): `token` leaves npm's authentication to its configuration and the environment, which `prepare` can write, as a package's first publication needs; `trusted-publishing`, for a package that npm already lists, gives `cutwater-publish` the ID token npm's trusted publishing exchanges, `NPM_ID_TOKEN`, and the one its provenance needs, `SIGSTORE_ID_TOKEN`.
 - `crates-io-auth` (`token`): `token` leaves cargo the token in `CARGO_REGISTRY_TOKEN`; `trusted-publishing` exchanges the job's ID token, `CRATES_IO_ID_TOKEN`, for a crates.io token at crates.io's trusted publishing endpoint when the commit releases a Cargo unit, as `cutwater released` names it, gives it to `cutwater publish` alone, which passes it to cargo alone, and revokes it once that ends, or in `after_script` when the job is canceled; a job that times out revokes nothing, and the token expires 30 minutes after the exchange. A set `CARGO_REGISTRY_TOKEN`, as the first publication of a crate needs, takes its place, with a warning. crates.io trusts pipelines of GitLab.com only.
 - `download-url` (the generic package registry of `gitlab.com/sakiori-oss/cutwater`): where the releases lie, each in `<version>/`.
 - `cosign-url` (cosign's GitHub releases): where cosign's releases lie, each in `v<version>/`.
@@ -92,16 +197,6 @@ The inputs:
 A self-managed instance that mirrors the component mirrors the releases with it, in the same layout, and points `download-url` at them, and `cosign-url` at a copy of cosign's releases when its runners cannot reach GitHub. Where they cannot reach Sigstore either, `cosign trusted-root` or Sigstore's TUF repository gives the trusted root, which the project commits and names in `trusted-root`. The signature stays that of cutwater's release pipeline on GitLab.com.
 
 `cutwater-check` and `cutwater-goal` clone the whole history, as they compare with the merge request's base; the other jobs take the project's clone depth, and `cutwater-publish` deepens it as far as the release commits lie. Any job's keywords can be overridden by a job of the same name in the including pipeline, such as `needs`, which the component leaves to the stages.
-
-The project needs:
-
-- the bot's token in the CI/CD variable `gitlab.token-variable` names, `CUTWATER_GITLAB_TOKEN` by default, masked and protected, with the default branch protected so that its pipelines receive it, and scoped to the environments `cutwater-mr` and `cutwater-publish`, with the scope `cutwater-*` or once for each, so that no other job of a pipeline, a test job or a repository's build script, receives it; registry tokens scoped to `cutwater-publish` alike;
-- default branch pipelines that are never cancelled automatically, because the release commit's pipeline is the only one that publishes its release: `workflow: auto_cancel: on_new_commit: none` in the pipeline, or _Auto-cancel redundant pipelines_ off in the project's CI/CD settings;
-- the release tags protected, so that only the bot creates them where the tier lets a protection rule name a user, and otherwise for the Maintainer role, which the bot then needs;
-- a merge method under which the release merge request's pipeline checks the tree that lands: fast-forward merges, merge commits with semi-linear history, merged results pipelines or merge trains;
-- the release branch protected, so that only the bot pushes and force pushes it where the tier lets a protection rule name a user, and otherwise the Maintainer role, which the bot then needs, with merging into it allowed to no one;
-- duplicate generic packages refused, so that a later upload cannot shadow a release's file: in the group's _Settings_ > _Packages and registries_, _Duplicate packages_, turn off _Allow duplicates_ in the _Generic_ row, which needs the group's Owner role;
-- the resource groups `cutwater-mr` and `cutwater-publish` set to process the oldest pipeline first, through the API once they exist: `PUT /projects/:id/resource_groups/cutwater-mr` with `process_mode=oldest_first`, and the same for `cutwater-publish`.
 
 A job that must run only after a release is published, such as one that deploys a snapshot depending on newly released versions or builds the image of a released unit, needs `cutwater-publish`. In the release commit's pipeline it then starts once the publication succeeded, and reads the record of the run, which `cutwater publish --json` prints, from the artifact `cutwater-publish.json`:
 
@@ -116,47 +211,23 @@ deploy-snapshot:
     - ./deploy-snapshot.sh cutwater-publish.json
 ```
 
-## Installing
+### Project settings
 
-Each release of cutwater is a GitLab Release with the tag `<version>`, such as `1.2.3`, the crate `cutwater` on crates.io, and the npm package `cutwater`, which installs the executable for its platform from one of the packages `@sakiori/cutwater-bin-<os>-<cpu>`. The executables are built for Linux, statically linked against musl, and for macOS, on x86_64 and arm64.
+The project needs:
 
-```sh
-cargo binstall cutwater                        # the release archive
-cargo install --locked cutwater                # built from the crate
-npm install --save-dev cutwater                # the npm package
-mise use gitlab:sakiori-oss/cutwater           # the release archive
-```
+- the bot's token in the CI/CD variable `gitlab.token-variable` names, `CUTWATER_GITLAB_TOKEN` by default, masked and protected, with the default branch protected so that its pipelines receive it, and scoped to the environments `cutwater-mr` and `cutwater-publish`, with the scope `cutwater-*` or once for each, so that no other job of a pipeline, a test job or a repository's build script, receives it; registry tokens scoped to `cutwater-publish` alike;
+- default branch pipelines that are never cancelled automatically, because the release commit's pipeline is the only one that publishes its release: `workflow: auto_cancel: on_new_commit: none` in the pipeline, or _Auto-cancel redundant pipelines_ off in the project's CI/CD settings;
+- the release tags protected, so that only the bot creates them where the tier lets a protection rule name a user, and otherwise for the Maintainer role, which the bot then needs;
+- a merge method under which the release merge request's pipeline checks the tree that lands: fast-forward merges, merge commits with semi-linear history, merged results pipelines or merge trains;
+- the release branch protected, so that only the bot pushes and force pushes it where the tier lets a protection rule name a user, and otherwise the Maintainer role, which the bot then needs, with merging into it allowed to no one;
+- where units have release assets, duplicate generic packages refused, so that a later upload cannot shadow a release's file: in the group's _Settings_ > _Packages and registries_, _Duplicate packages_, turn off _Allow duplicates_ in the _Generic_ row, which needs the group's Owner role;
+- the registries' publishing credentials, CI/CD variables scoped to the environment `cutwater-publish`: for npm a token that `prepare` writes into npm's configuration, such as `printf '//registry.npmjs.org/:_authToken=${NPM_TOKEN}\n' > "$HOME/.npmrc"`, which npm expands when it reads the file, or npm's trusted publishing (`npm-auth`); for cargo `CARGO_REGISTRY_TOKEN`, or crates.io's trusted publishing (`crates-io-auth`); a package's first publication needs the token, as both registries add a trusted publisher only to a package that exists;
+- for a private registry, the read credentials that `cutwater-goal` needs too, to install and pack against it: CI/CD variables scoped to all environments (`*`), as `cutwater-goal` prepares none, which `prepare` writes in both jobs;
+- the resource groups `cutwater-mr` and `cutwater-publish` set to process the oldest pipeline first, through the API once they exist: `PUT /projects/:id/resource_groups/cutwater-mr` with `process_mode=oldest_first`, and the same for `cutwater-publish`.
 
-Each archive and each platform package carries, beside the executable, `THIRD-PARTY-NOTICES.txt`, the licenses and notices of the crates it is built from, of the Rust toolchain's compiler-builtins and, on Linux, of musl and Zig, and `RUST-LIBRARY-COPYRIGHT.html`, the notices of the Rust standard library. The Release links the archives `cutwater-<version>-<target>.tar.gz`, `SHA256SUMS` and its Sigstore bundle, `SHA256SUMS.sigstore.json`, signed by the pipeline of cutwater's default branch:
+## Contributing and security
 
-```sh
-cosign verify-blob --bundle SHA256SUMS.sigstore.json \
-  --certificate-identity https://gitlab.com/sakiori-oss/cutwater//.gitlab-ci.yml@refs/heads/main \
-  --certificate-oidc-issuer https://gitlab.com SHA256SUMS
-sha256sum --check --ignore-missing SHA256SUMS
-```
-
-## Building from source
-
-With a Rust toolchain (`rust-toolchain.toml` names the one the project uses; `rust-version` in `Cargo.toml` is the oldest supported):
-
-```sh
-cargo install --locked --path .
-```
-
-## Releasing cutwater
-
-cutwater releases itself through its own component, with the executable that its pipeline builds from the commit it runs for, so that a release commit's code publishes itself. Its units, in `.cutwater/config.toml`, form one fixed group tagged `<version>`, without a `v`: the crate `cutwater`, whose release assets are the four archives, `SHA256SUMS` and its bundle; the npm package `cutwater`, the unit `cutwater-npm`; and the four platform packages, which `npm/check-package.mjs` refuses to pack without their executable and its notices. `cargo run --locked -p xtask -- notices <dir> <target>` writes the notices with cargo-about, from `about.toml` and `about.hbs`; it fails when a crate's license is not one that `about.toml` accepts, and when `about.toml` accepts other licenses than `deny.toml` allows. The release merge request's pipeline builds the four targets and checks every package that the release publishes. The push pipeline of the release commit, which `cutwater released` names in the `release-decision` job, builds them again, signs `SHA256SUMS` keylessly with its GitLab ID token, stages the npm packages and publishes. No other pipeline builds, signs or stages a release, neither a later commit's nor one scheduled or started by hand or by the API on the release commit; its `cutwater-publish` passes where the release's tag and Release exist, and fails where the release is unpublished, as its files are missing. The macOS targets are built on the group's runner tagged `sakiori-oss-macos`, which takes jobs of protected refs only.
-
-A merge request that changes the crate's shipped files (`src/`, `Cargo.toml`, `Cargo.lock`, `LICENSE`, `README.md` and the component in `templates/`) or an npm package needs a changeset: `cutwater add`, or `cutwater add --empty` for a change that releases nothing. `cutwater-check` fails it otherwise.
-
-The project's settings, beyond those every project using the component needs:
-
-- `CUTWATER_GITLAB_TOKEN`: the personal access token of the group's release bot, with the `api` scope, masked, protected and hidden, with the environment scope `cutwater-*`. The bot needs the Maintainer role: the protected tag pattern `*.*.*` lets Maintainers create the release tags, and the protected branch `cutwater/release` lets Maintainers push and force push, and no one merge into it.
-- _Allow merge request pipelines to access protected variables and runners_, in the CI/CD settings: the release merge request's pipeline, between the protected `cutwater/release` and `main`, then builds the macOS targets, and its check covers the macOS packages. GitLab grants this only when the user whose push started the pipeline, the bot, may push or merge into `main`. Without it, `cutwater-goal` fails and says why. With it, every job of that pipeline receives the protected variables that no environment scopes, which is why the bot token and the registry tokens are scoped to the environments of `cutwater-mr` and `cutwater-publish`.
-- The runner tagged `sakiori-oss-macos` enabled for the project.
-- For the first publication of each package, as both registries require, set before the first release merge request is merged: `NPM_TOKEN`, a granular npm token of an account that may publish to the scope `@sakiori`, with read and write access to all packages, as the new unscoped `cutwater` needs, and _Bypass two-factor authentication_ checked, and `CARGO_REGISTRY_TOKEN`, a crates.io token with the `publish-new` and `publish-update` scopes for the crate `cutwater`; each masked, protected and hidden, scoped to the environment `cutwater-publish`, and expiring within days.
-- After the first publication: a trusted publisher for each npm package, with namespace `sakiori-oss`, project `cutwater`, CI file `.gitlab-ci.yml` and environment `cutwater-publish`, and one for the crate on crates.io with the same namespace, project, workflow file path and environment. npm drops a trusted publisher that no publication used within two days, so the next release follows soon. Then delete `NPM_TOKEN` and `CARGO_REGISTRY_TOKEN` and revoke both tokens: the pipeline publishes through trusted publishing whenever they are absent.
+[CONTRIBUTING.md](https://gitlab.com/sakiori-oss/cutwater/-/blob/main/CONTRIBUTING.md) describes how to build and test cutwater, how merge requests land and how cutwater releases itself. Report a vulnerability as [SECURITY.md](https://gitlab.com/sakiori-oss/cutwater/-/blob/main/SECURITY.md) describes, never in a public issue.
 
 ## License
 

@@ -46,7 +46,7 @@ for entry in \
   if [ ! -f "$archive" ]; then
     case "$target" in
       *-apple-darwin)
-        echo "dist/ lacks ${archive#dist/}. The macOS runner builds it, in a merge request pipeline only when the release branch and the target branch are protected and the project allows merge request pipelines to access protected runners (README.md, Releasing cutwater)." >&2
+        echo "dist/ lacks ${archive#dist/}. The macOS runner builds it, in a merge request pipeline only when the release branch and the target branch are protected and the project allows merge request pipelines to access protected runners (CONTRIBUTING.md, Releasing cutwater)." >&2
         ;;
       *) echo "dist/ lacks ${archive#dist/}" >&2 ;;
     esac

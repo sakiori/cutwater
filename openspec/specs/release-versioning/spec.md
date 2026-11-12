@@ -1,4 +1,9 @@
-## ADDED Requirements
+# release-versioning Specification
+
+## Purpose
+The version plan, the version manifest, applying the plan to a unit's files, changelogs in the layout of Changesets, and prerelease mode.
+
+## Requirements
 
 ### Requirement: Version plan
 The next version of a unit SHALL follow the highest bump among the pending changesets that name it. A fixed group SHALL take the highest next version among its members, and every member SHALL take that version. The plan SHALL repeat these rules, and the dependency rule, until no unit changes.
@@ -85,7 +90,7 @@ The tool SHALL keep `.cutwater/versions.toml` with the released version of every
 - **THEN** `check` fails and lists the edges `api → core` and `core → api`
 
 ### Requirement: New and removed units
-A unit without a manifest entry SHALL be new and SHALL be released only once a changeset names it with a bump other than `none`. Its first release SHALL be the version its adapter's files declare, for Maven the `revision` without `-SNAPSHOT`, and the changesets naming it SHALL only provide its changelog entry.
+A unit without a manifest entry SHALL be new and SHALL be released only once a changeset names it with a bump other than `none`. Its first release SHALL be the version its adapter's files declare, and the changesets naming it SHALL only provide its changelog entry.
 
 #### Scenario: First release of a new package
 - **WHEN** a merge request adds the npm package `export` at version 0.1.0 with a changeset, and the release merge request lands

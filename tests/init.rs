@@ -510,6 +510,28 @@ fn crate_versions_from_its_registry() {
     ));
 }
 
+/// With every unit new, nothing is seeded, and `init` says only what it
+/// created and what is new.
+#[test]
+fn only_new_units_seed_nothing() {
+    let repo = Repo::new();
+    repo.write(
+        "Cargo.toml",
+        "[package]\nname = \"tool\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+    );
+    repo.write("src/main.rs", "fn main() {}\n");
+    repo.commit("crate");
+    repo.cutwater()
+        .args(["init", "--new", "tool"])
+        .assert()
+        .success()
+        .stdout(
+            "Created .cutwater/config.toml and .cutwater/versions.toml.\n\
+             New, without a release yet: tool. Their first release is the version their files \
+             declare.\n",
+        );
+}
+
 #[test]
 fn cargo_asks_with_the_repository_configuration() {
     let repo = Repo::new();

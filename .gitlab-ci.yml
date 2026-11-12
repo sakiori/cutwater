@@ -28,8 +28,8 @@
 # cutwater releases itself through its own CI/CD component, templates/
 # release.yml, with the executable that the tool job builds from the
 # pipeline's commit: a release commit's code publishes itself, and the first
-# release has no earlier one to download. README.md, Releasing cutwater,
-# describes the project settings and the credentials this relies on.
+# release has no earlier one to download. CONTRIBUTING.md, Releasing
+# cutwater, describes the project settings and the credentials this relies on.
 #
 # The images are pinned by digest, the tools by version and checksum in
 # .gitlab/scripts/install-tools.sh, and the OpenSpec CLI and Verdaccio with
@@ -463,7 +463,8 @@ build-darwin:
 # runs no build code. It is not the only job whose ID token Sigstore accepts:
 # cutwater-publish holds one for npm's provenance, and Sigstore's certificates
 # name the pipeline's configuration, not the job, so both sign with the same
-# identity (openspec/changes/initial-cutwater/design.md, Self-release).
+# identity (openspec/changes/archive/2026-11-12-initial-cutwater/design.md,
+# Self-release).
 sign:
   stage: sign
   interruptible: false

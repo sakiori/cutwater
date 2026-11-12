@@ -1,4 +1,9 @@
-## ADDED Requirements
+# release-intent Specification
+
+## Purpose
+The configuration, units and fixed groups, the adoption of a repository by `init`, changeset files in the format of Changesets, and the merge request check that a change to a unit's shipped files carries a changeset.
+
+## Requirements
 
 ### Requirement: Configuration
 The tool SHALL read the repository's settings from `.cutwater/config.toml`: the default branch, the release branch, the title of the release merge request, the forge settings, the units, the fixed groups, the repository checks and the adapter settings. It SHALL refuse to run when the file is missing or invalid, naming the setting and the problem. The project SHALL publish a JSON Schema of the file.
@@ -12,7 +17,7 @@ The tool SHALL read the repository's settings from `.cutwater/config.toml`: the 
 - **THEN** every command refuses, naming the setting and its line
 
 ### Requirement: Units
-A unit SHALL be what is versioned and released as one: an npm package, a Maven aggregator with the modules that share its version, or a Cargo crate. Each unit SHALL have a name unique in the repository, a path, an adapter, the patterns of its shipped files and a tag template.
+A unit SHALL be what is versioned and released as one, as its ecosystem adapter defines it: an npm package or a Cargo crate. Each unit SHALL have a name unique in the repository, a path, an adapter, the patterns of its shipped files and a tag template.
 
 #### Scenario: Duplicate unit name
 - **WHEN** two units have the same name

@@ -317,11 +317,15 @@ pub fn run(args: &InitArgs) -> Result<ExitCode> {
     std::fs::write(root.join(MANIFEST_FILE), manifest.render())
         .with_context(|| format!("cannot write {MANIFEST_FILE}"))?;
 
-    crate::outln!(
-        "Created {CONFIG_FILE} and {MANIFEST_FILE}, with the released versions as seeded:"
-    )?;
-    for (name, entry) in &manifest.units {
-        crate::outln!("  {name} {}", entry.version)?;
+    if manifest.units.is_empty() {
+        crate::outln!("Created {CONFIG_FILE} and {MANIFEST_FILE}.")?;
+    } else {
+        crate::outln!(
+            "Created {CONFIG_FILE} and {MANIFEST_FILE}, with the released versions as seeded:"
+        )?;
+        for (name, entry) in &manifest.units {
+            crate::outln!("  {name} {}", entry.version)?;
+        }
     }
     if !args.new.is_empty() {
         crate::outln!(

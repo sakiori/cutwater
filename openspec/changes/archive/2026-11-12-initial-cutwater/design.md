@@ -1,6 +1,6 @@
 ## Context
 
-`cutwater` joins three established practices: Changesets' reviewed intent files, release-please's bot-maintained release request with a version manifest, and Maven's CI-friendly versions. The decisions below are the ones a reader cannot recover from the specifications alone.
+`cutwater` joins two established practices: Changesets' reviewed intent files and release-please's bot-maintained release request with a version manifest. Maven's CI-friendly versions, the third, come with the change `add-maven-adapter`. The decisions below are the ones a reader cannot recover from the specifications alone.
 
 ## Decisions
 
@@ -12,25 +12,15 @@ Alternative: conventional commits, as release-please and semantic-release use. R
 
 ### Publication happens from the release commit
 
-A version is published only from the commit that released it, in that commit's pipeline. This is the commit on the default branch's first-parent history that landed the release merge request, a merge commit where the project merges with merge commits, so what is published is the tree its pipeline checked. A failed publication is resumed by retrying the job in that pipeline. Publishing from any later default-branch commit would build later, unreviewed code under the released version number. A Maven build passes the version on the command line, so it would not even notice. release-please tags the release pull request's merge commit for the same reason.
+A version is published only from the commit that released it, in that commit's pipeline. This is the commit on the default branch's first-parent history that landed the release merge request, a merge commit where the project merges with merge commits, so what is published is the tree its pipeline checked. A failed publication is resumed by retrying the job in that pipeline. Publishing from any later default-branch commit would build later, unreviewed code under the released version number. release-please tags the release pull request's merge commit for the same reason.
 
 The registry the unit deploys to decides whether a version is missing. A tag is created only after its unit, or its whole group, is published, so a tag together with its Release is proof of publication and spares later pipelines a registry query. Later pipelines fail only when a released version is missing from its registry, and only warn when it is published but untagged. Versions seeded by `init` are taken as released and never tagged, so adopting the tool does not fail every later pipeline. A fixed group that Changesets tagged per member gets one group tag from its next release on. Tags as the only source of truth would fail both ways: a tag created before publication names a version nobody can install, and a publication without a tag would be republished, which registries reject.
 
 ### One version manifest for every ecosystem
 
-`.cutwater/versions.toml` holds the released version of every unit. It also identifies a unit's release commit: the commit that last changed the unit's entry. Maven needs the manifest, because its committed files hold snapshots and the released version has to live elsewhere. Keeping it for every ecosystem gives planning, `goal` and `publish` one source, and lets adapters that hold the version in their own files be checked against it. release-please keeps a manifest for the same reason. Group versions are not stored: a group's version is its members' common version.
+`.cutwater/versions.toml` holds the released version of every unit. It also identifies a unit's release commit: the commit that last changed the unit's entry. Maven, which the change `add-maven-adapter` adds, needs the manifest, because its committed files hold snapshots and the released version has to live elsewhere. Keeping it for every ecosystem gives planning, `goal` and `publish` one source, and lets adapters that hold the version in their own files be checked against it. release-please keeps a manifest for the same reason. Group versions are not stored: a group's version is its members' common version.
 
 Alternative: a manifest for Maven only. Rejected because the release commit would have no single definition and the core would treat one ecosystem differently.
-
-### Maven: snapshots everywhere, released versions only in release builds
-
-The committed `revision` of every unit is its next snapshot. A dependent refers to a producer through a version property that also holds the producer's snapshot, so a change to a producer and its dependents fits in one merge request and builds in one reactor. Release builds cover only the units the release publishes, one per Maven invocation in dependency order. Each build passes the released versions from the manifest on the command line and installs the unit into a job-local repository for the dependents that follow. Producers the release does not publish resolve from the deploy repository, so a dependent is built against what consumers will actually get. Command-line properties do not reach a deployed POM, so the flatten plugin must interpolate dependencies as well as `revision`. `goal` inspects the POMs that would be deployed for snapshots and unresolved properties. A released unit therefore never depends on a snapshot, and the default branch never carries a release version.
-
-Alternative: commit the released version and add a second "snapshot bump" request, as release-please's Java strategy does. Rejected because between the two merges the default branch carries a release version. Every snapshot deployment from it then tries to redeploy a released version, which release repositories reject.
-
-Alternative: commit the producer's released version in dependents. Rejected because a change that spans a producer and its dependents would then need two merge requests and a release in between.
-
-Maven deployment is not atomic across a reactor. The adapter therefore asks the deploy repository about every module and deploys only the missing ones, so an interrupted deployment can be completed instead of failing on its first module. Maven Central's Portal publishes atomic bundles and Nexus staging repositories hide unreleased deployments. Both need their own target types and are out of scope here.
 
 ### The release branch is written through the API
 
@@ -52,7 +42,7 @@ The tool never logs in to a registry. crates.io's trusted publishing needs a tok
 
 ### Rust, built-in adapters and repository checks
 
-The tool serves several ecosystems, so it must not require the runtime of one of them: a Maven repository's CI should not need Node. A static binary installs anywhere, including minimal CI images. npm, Maven and Cargo are built in behind one internal interface with serializable inputs and outputs. A protocol for external adapters is left to a later change and will carry that interface unchanged. Repository-specific checks are plain commands that receive the units and the plan as JSON.
+The tool serves several ecosystems, so it must not require the runtime of one of them: a Cargo repository's CI should not need Node. A static binary installs anywhere, including minimal CI images. npm and Cargo are built in behind one internal interface with serializable inputs and outputs. A protocol for external adapters is left to a later change and will carry that interface unchanged. Repository-specific checks are plain commands that receive the units and the plan as JSON.
 
 Alternative: TypeScript, with plugins as ESM modules loaded by path. Rejected because it ties every adopter to Node.
 
@@ -91,5 +81,4 @@ The tool's own pipeline includes the component from its own commit, as GitLab do
 ## Risks and open points
 
 - Whether a commit through the commits API to a merge request in a merge train behaves like a push needs confirming on a disposable project. So do the pipelines a fast-forward merge starts.
-- The Maven adapter reads POMs without running Maven. Dependency versions that inheritance or profiles change are outside edge discovery, and integration tests against real Maven confirm the supported cases.
-- GitHub as a forge, maintenance branches, external adapters, Maven Central's Portal and Maven 4 are not part of this change. The forge interface, the `superseded` distribution tag and the adapter interface keep each of them possible.
+- Maven, GitHub as a forge, maintenance branches and external adapters are not part of this change. The adapter interface, the forge interface and the `superseded` distribution tag keep each of them possible.
