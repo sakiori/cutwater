@@ -5,10 +5,10 @@
 #   the oldest supported git, publication to local npm and Cargo
 #   registries, Maven's release builds and deployments, the CI/CD
 #   component's steps with cosign, the minimum supported Rust version,
-#   cargo-deny, the crate's package, the pipeline's scripts and the OpenSpec
-#   specification, and the Linux release builds when the change can affect
-#   them. cutwater-check, of the CI/CD component,
-#   checks its changesets. A pipeline started by hand runs the same checks.
+#   cargo-deny, the crate's package and the pipeline's scripts, and the
+#   Linux release builds when the change can affect them. cutwater-check,
+#   of the CI/CD component, checks its changesets. A pipeline started by
+#   hand runs the same checks.
 # - The release merge request's pipeline builds the four release targets and
 #   runs cutwater-goal, which checks the crate and the npm packages that the
 #   release would publish.
@@ -21,8 +21,7 @@
 #   default branch pipeline, a later commit's or one scheduled or started by
 #   hand or by the API, even on the release commit, builds, signs and stages
 #   nothing; its cutwater-publish checks that releases are published, and
-#   fails where one is not, as its files are missing. It also checks the
-#   OpenSpec specification.
+#   fails where one is not, as its files are missing.
 # - A schedule of the default branch runs cargo-deny, so that a new RustSec
 #   advisory fails without a change.
 #
@@ -33,19 +32,18 @@
 # cutwater, describes the project settings and the credentials this relies on.
 #
 # The images are pinned by digest, the tools by version and checksum in
-# .gitlab/scripts/install-tools.sh, and the OpenSpec CLI and Verdaccio with
-# their dependencies in .gitlab/openspec and .gitlab/verdaccio. Jobs run on
-# one of the group's two x86_64 Linux runners, except the macOS builds and
-# cutwater-publish: a pipeline that GitLab runs for a protected ref, the
-# default branch's and the release merge request's where the project gives
-# it protected runners, on the one tagged sakiori-oss-linux-protected, which
-# takes protected refs only, and every other pipeline, the other merge
-# request pipelines among them, on the one tagged sakiori-oss-linux. Apple's
-# SDK may be used only on Apple hardware, so the macOS targets build natively
-# on the group's Apple silicon runner, tagged sakiori-oss-macos, which takes
-# jobs of protected refs only and runs each in a disposable macOS virtual
-# machine. npm's trusted publishing works only on GitLab.com's shared
-# runners, so cutwater-publish runs there.
+# .gitlab/scripts/install-tools.sh, and Verdaccio with its dependencies in
+# .gitlab/verdaccio. Jobs run on one of the group's two x86_64 Linux runners,
+# except the macOS builds and cutwater-publish: a pipeline that GitLab runs
+# for a protected ref, the default branch's and the release merge request's
+# where the project gives it protected runners, on the one tagged
+# sakiori-oss-linux-protected, which takes protected refs only, and every
+# other pipeline, the other merge request pipelines among them, on the one
+# tagged sakiori-oss-linux. Apple's SDK may be used only on Apple hardware,
+# so the macOS targets build natively on the group's Apple silicon runner,
+# tagged sakiori-oss-macos, which takes jobs of protected refs only and runs
+# each in a disposable macOS virtual machine. npm's trusted publishing works
+# only on GitLab.com's shared runners, so cutwater-publish runs there.
 
 workflow:
   rules:
@@ -106,7 +104,6 @@ stages:
 variables:
   # Rust 1.99.1 on Debian 13; rust-toolchain.toml names the same release.
   RUST_IMAGE: rust:1.99.1-trixie@sha256:09027f873d45b8ecd1dc86f1fa13b7a62b875c961f017a0e331267b350430137
-  NODE_IMAGE: node:24.22.2-trixie-slim@sha256:54f84b4cf8432b21aaffd5d3ce8d41e12cea0d10d33c09d2f3c9879d49d6b446
   # Cirrus Labs' macOS 26 base image with the Xcode Command Line Tools,
   # gitlab-runner and Rosetta.
   MACOS_IMAGE: ghcr.io/cirruslabs/macos-tahoe-base@sha256:4aaa751fa7538902d73c767f27a066fc87e83f183069da4e4b5022863abd4c77
@@ -286,20 +283,6 @@ ci-scripts:
       [ -z "$plain" ] || { printf 'not executable in git (git update-index --chmod=+x):\n%s\n' "$plain" >&2; exit 1; }
     - .gitlab/scripts/install-tools.sh "$TOOLS" shellcheck
     - '"$TOOLS/bin/shellcheck" .gitlab/scripts/*.sh'
-
-# The OpenSpec CLI and its whole dependency tree, as
-# .gitlab/openspec/package-lock.json pins them with their integrity hashes;
-# none of them needs an install script.
-openspec:
-  image: $NODE_IMAGE
-  rules:
-    - if: $CI_PIPELINE_SOURCE != "schedule"
-  variables:
-    # The CLI reports usage to its authors unless told not to.
-    OPENSPEC_TELEMETRY: "0"
-  script:
-    - npm ci --prefix .gitlab/openspec --ignore-scripts --no-audit --no-fund
-    - .gitlab/openspec/node_modules/.bin/openspec validate --all --strict --no-interactive
 
 # The CI/CD component's steps, run with sh as GitLab's runners run them;
 # these tests run cosign itself, as install-tools.sh and the component pin
@@ -499,8 +482,7 @@ build-darwin:
 # runs no build code. It is not the only job whose ID token Sigstore accepts:
 # cutwater-publish holds one for npm's provenance, and Sigstore's certificates
 # name the pipeline's configuration, not the job, so both sign with the same
-# identity (openspec/changes/archive/2026-11-12-initial-cutwater/design.md,
-# Self-release).
+# identity.
 sign:
   stage: sign
   interruptible: false

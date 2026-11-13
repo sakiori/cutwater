@@ -4,7 +4,7 @@
 
 It combines practices that other tools offer apart: changeset files in the format of [Changesets](https://github.com/changesets/changesets) instead of versions derived from commit messages, one release merge request that a bot maintains and never merges, and publication from the very commit that landed the release, for npm packages, Cargo crates and Maven units of one repository together, on GitLab.
 
-cutwater supports npm packages (pnpm and npm workspaces, single packages), Cargo crates (workspaces, single crates) and Maven units (aggregators with CI-friendly versions and the modules that share them, built with Maven 3.9 or later and deployed to a Maven repository), released through GitLab, on GitLab.com or a self-managed instance. Yarn and Bun workspaces, Maven 4, Maven Central's Portal and Nexus staging repositories are not supported. [`openspec/specs/`](https://gitlab.com/sakiori-oss/cutwater/-/tree/main/openspec/specs/) specifies what is implemented.
+cutwater supports npm packages (pnpm and npm workspaces, single packages), Cargo crates (workspaces, single crates) and Maven units (aggregators with CI-friendly versions and the modules that share them, built with Maven 3.9 or later and deployed to a Maven repository), released through GitLab, on GitLab.com or a self-managed instance. Yarn and Bun workspaces, Maven 4, Maven Central's Portal and Nexus staging repositories are not supported.
 
 ## Install
 

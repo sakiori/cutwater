@@ -17,18 +17,11 @@ Three groups of tests are ignored by default, because they need tools of their o
 - `tests/component.rs` runs cosign 3.1.4 and shellcheck 0.11.0 on the CI/CD component's steps, named by `CUTWATER_TEST_COSIGN` and `CUTWATER_TEST_SHELLCHECK`: `cargo test --locked --test component -- --ignored` runs them.
 - `tests/maven.rs` runs Maven 3.9.16 on a JDK 25, named by `CUTWATER_TEST_MVN`, with settings and local repositories of its own and `file://` and HTTP deploy repositories on the machine; the plugins the tests run come from Maven Central once, into `target/tmp/maven-plugins`, which the tests' settings then make the mirror of Maven Central: `cargo test --locked --test maven -- --ignored` runs them.
 
-Merge request pipelines also build with the oldest supported Rust and test against the oldest supported git, run `cargo deny check` as `deny.toml` configures it, package the crate, run shellcheck on `.gitlab/scripts/`, validate the OpenSpec specification, and, when a change can affect the build, build the Linux release archives. `.gitlab/scripts/build-release.sh <target>` builds an archive: a Linux target with cargo-zigbuild and zig, a macOS target on macOS with the Xcode Command Line Tools, each with cargo-about 0.9.2 and the toolchain's `rust-src` component for the third-party notices, which `cargo run --locked -p xtask -- notices <dir> <target>` writes. `install-tools.sh` installs the pinned tools on x86_64 Linux, and rustup-init and cargo-about on Apple silicon macOS.
-
-## Behaviour changes
-
-cutwater's behaviour is specified with [OpenSpec](https://github.com/Fission-AI/OpenSpec): `openspec/specs/` holds the current specification, `openspec/changes/` the changes not yet implemented, and `openspec/changes/archive/` those that led to the specification. A change of behaviour starts as a change under `openspec/changes/<name>/` in the repository's schema `proposal-spec`: a `proposal.md`, the spec deltas under `specs/<capability>/spec.md`, and a `design.md` only for a consequential technical choice. A change has no `tasks.md`. Once the code, tests and README follow it, it is archived into the specification. The CLI that `.gitlab/openspec/package.json` pins checks it:
-
-```sh
-npm ci --prefix .gitlab/openspec --ignore-scripts
-.gitlab/openspec/node_modules/.bin/openspec validate --all --strict --no-interactive
-```
+Merge request pipelines also build with the oldest supported Rust and test against the oldest supported git, run `cargo deny check` as `deny.toml` configures it, package the crate, run shellcheck on `.gitlab/scripts/`, and, when a change can affect the build, build the Linux release archives. `.gitlab/scripts/build-release.sh <target>` builds an archive: a Linux target with cargo-zigbuild and zig, a macOS target on macOS with the Xcode Command Line Tools, each with cargo-about 0.9.2 and the toolchain's `rust-src` component for the third-party notices, which `cargo run --locked -p xtask -- notices <dir> <target>` writes. `install-tools.sh` installs the pinned tools on x86_64 Linux, and rustup-init and cargo-about on Apple silicon macOS.
 
 ## Merge requests
+
+A merge request that changes cutwater's behaviour describes the change and its reason, and brings the README and the tests along with it.
 
 A merge request that changes the crate's shipped files (`src/`, `Cargo.toml`, `Cargo.lock`, `LICENSE`, `README.md` and the component in `templates/`) or an npm package under `npm/` needs a changeset, which `cutwater-check` requires: `cutwater add` for a change that releases, or `cutwater add --empty` for one that releases nothing (`cargo run -- add` runs the tool of the checkout).
 
