@@ -1,6 +1,6 @@
 [package]
 name = "cutwater"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 # The oldest toolchain that builds the crate with the locked dependencies
 # (serde-saphyr needs 1.89); the msrv job in CI builds with it.

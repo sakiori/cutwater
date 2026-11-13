@@ -2,9 +2,9 @@
 # write this file.
 
 [units]
-"@sakiori/cutwater-bin-darwin-arm64" = "0.1.0"
-"@sakiori/cutwater-bin-darwin-x64" = "0.1.0"
-"@sakiori/cutwater-bin-linux-arm64" = "0.1.0"
-"@sakiori/cutwater-bin-linux-x64" = "0.1.0"
-cutwater = "0.1.0"
-cutwater-npm = "0.1.0"
+"@sakiori/cutwater-bin-darwin-arm64" = "0.2.0"
+"@sakiori/cutwater-bin-darwin-x64" = "0.2.0"
+"@sakiori/cutwater-bin-linux-arm64" = "0.2.0"
+"@sakiori/cutwater-bin-linux-x64" = "0.2.0"
+cutwater = "0.2.0"
+cutwater-npm = "0.2.0"

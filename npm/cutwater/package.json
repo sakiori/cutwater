@@ -1,6 +1,6 @@
 {
   "name": "cutwater",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Releases the packages of a repository through one bot-maintained merge request, from reviewed changeset files",
   "keywords": [
     "release",
@@ -30,9 +30,9 @@
     "prepack": "node ../check-package.mjs"
   },
   "optionalDependencies": {
-    "@sakiori/cutwater-bin-darwin-arm64": "0.1.0",
-    "@sakiori/cutwater-bin-darwin-x64": "0.1.0",
-    "@sakiori/cutwater-bin-linux-arm64": "0.1.0",
-    "@sakiori/cutwater-bin-linux-x64": "0.1.0"
+    "@sakiori/cutwater-bin-darwin-arm64": "0.2.0",
+    "@sakiori/cutwater-bin-darwin-x64": "0.2.0",
+    "@sakiori/cutwater-bin-linux-arm64": "0.2.0",
+    "@sakiori/cutwater-bin-linux-x64": "0.2.0"
   }
 }
