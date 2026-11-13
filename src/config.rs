@@ -46,6 +46,12 @@ pub struct Config {
     /// as `cargo metadata` reports them, so cargo must be on the `PATH`.
     #[serde(default)]
     pub cargo: AdapterSettings,
+    /// The Maven adapter's settings. Its discovery finds the aggregator
+    /// POMs whose version is `${revision}` and that define `revision`
+    /// themselves, outside the modules of another such POM, wherever they
+    /// lie in the repository; each is a unit, named after its `artifactId`.
+    #[serde(default)]
+    pub maven: AdapterSettings,
     /// Units listed by hand. A listed unit overrides the discovered unit of
     /// the same name; it needs `path` and `adapter` only when no adapter
     /// discovers it.
@@ -346,6 +352,7 @@ impl Config {
         match kind {
             AdapterKind::Npm => &self.npm,
             AdapterKind::Cargo => &self.cargo,
+            AdapterKind::Maven => &self.maven,
         }
     }
 

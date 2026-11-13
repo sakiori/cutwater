@@ -71,6 +71,7 @@ pub fn run(args: &GoalArgs) -> Result<ExitCode> {
     }
 
     sound &= print_disagreements(&disagreements(&manifest, &inspected.declared));
+    sound &= inspected.print_problems();
 
     let versions: Vec<VersionWrite> = manifest
         .units
@@ -109,7 +110,7 @@ pub fn run(args: &GoalArgs) -> Result<ExitCode> {
         sound = false;
         eprintln!("error: what the {kind} adapter would publish fails its checks:");
         for problem in &prepared.problems {
-            eprintln!("  {}: {}", problem.units.join(", "), problem.message);
+            eprintln!("  {problem}");
         }
     }
 

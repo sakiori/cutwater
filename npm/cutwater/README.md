@@ -1,6 +1,6 @@
 # cutwater
 
-`cutwater` releases the packages of a repository through one merge request that a bot keeps up to date, from changeset files reviewed with each change. It supports npm packages (pnpm and npm workspaces, single packages) and Cargo crates, released through GitLab. This package installs its executable for Linux (x64, arm64) and macOS (x64, arm64) from the platform package that matches the machine, and runs it.
+`cutwater` releases the packages of a repository through one merge request that a bot keeps up to date, from changeset files reviewed with each change. It supports npm packages (pnpm and npm workspaces, single packages), Cargo crates and Maven units, released through GitLab. This package installs its executable for Linux (x64, arm64) and macOS (x64, arm64) from the platform package that matches the machine, and runs it.
 
 Set a repository up, on a clean checkout of its default branch:
 

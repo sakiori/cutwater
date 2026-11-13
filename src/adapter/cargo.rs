@@ -11,8 +11,8 @@ use semver::{Op, Version, VersionReq};
 use toml_edit::{DocumentMut, Item, TableLike, Value};
 
 use super::{
-    AcceptsRequest, Adapter, AdapterError, DiscoverRequest, DiscoveredUnit, Discovery, Edge,
-    EdgeKind, FileWrite, InspectRequest, Inspection, Location, LockfileRequest, Lockfiles,
+    AcceptsRequest, Adapter, AdapterError, Adoption, DiscoverRequest, DiscoveredUnit, Discovery,
+    Edge, EdgeKind, FileWrite, InspectRequest, Inspection, Location, LockfileRequest, Lockfiles,
     PLAIN_OUTPUT, PackageProblem, PrepareRequest, Prepared, Publication, Publications,
     PublishOutcome, PublishRequest, Published, PublishedRequest, Tools, ToolsRequest, UnitRef,
     UnitVersion, VersionQuery, WriteRequest, Writes, join, nearest_lockfiles, resolve_dir,
@@ -170,7 +170,11 @@ impl Adapter for Cargo {
                 }
             }
         }
-        Ok(Inspection { units, edges })
+        Ok(Inspection {
+            units,
+            edges,
+            problems: Vec::new(),
+        })
     }
 
     fn accepts(&self, request: &AcceptsRequest) -> Result<bool, AdapterError> {
@@ -199,6 +203,7 @@ impl Adapter for Cargo {
             let inspection = self.inspect(&InspectRequest {
                 root: root.clone(),
                 units: request.units.clone(),
+                released: Vec::new(),
             })?;
             for write in &request.versions {
                 let unit = inspection
@@ -273,6 +278,10 @@ impl Adapter for Cargo {
 
     fn lockfiles(&self, request: &LockfileRequest) -> Result<Lockfiles, AdapterError> {
         Ok(nearest_lockfiles(request, &LOCKFILES))
+    }
+
+    fn adopt(&self, _request: &InspectRequest) -> Result<Adoption, AdapterError> {
+        Ok(Adoption::default())
     }
 
     /// Asks with `cargo info`, from a throwaway package that is its own
@@ -357,6 +366,7 @@ impl Adapter for Cargo {
             .inspect(&InspectRequest {
                 root: root.clone(),
                 units: request.units.clone(),
+                released: Vec::new(),
             })?
             .edges;
         if let Some(edge) = released_reference(&request.packages, &edges) {
@@ -1209,6 +1219,7 @@ mod tests {
             .inspect(&InspectRequest {
                 root: root.to_path_buf(),
                 units,
+                released: Vec::new(),
             })
             .unwrap()
     }

@@ -10,7 +10,9 @@ use anyhow::{Context, Result, bail};
 use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
 use serde::Deserialize;
 
-use crate::adapter::{AdapterKind, DiscoverRequest, PublishedRequest, UnitRef, VersionQuery};
+use crate::adapter::{
+    AdapterKind, DiscoverRequest, InspectRequest, PublishedRequest, UnitRef, VersionQuery,
+};
 use crate::changeset::CHANGESET_DIR;
 use crate::cli::InitArgs;
 use crate::commands::Repository;
@@ -77,8 +79,8 @@ pub fn run(args: &InitArgs) -> Result<ExitCode> {
     }
     if discovered.is_empty() {
         bail!(
-            "found no publishable npm package or Cargo crate; list the repository's units in \
-             {CONFIG_FILE} by hand"
+            "found no publishable npm package, Cargo crate or Maven unit; list the repository's \
+             units in {CONFIG_FILE} by hand"
         );
     }
 
@@ -224,14 +226,53 @@ pub fn run(args: &InitArgs) -> Result<ExitCode> {
     if let Some(name) = args.new.iter().find(|name| args.published.contains(name)) {
         bail!("`--new` and `--published` both name `{name}`; a unit is one or the other");
     }
-    let seed = |manifest: &mut Manifest, unit: &str| -> Result<()> {
-        let declared = &inspected.declared[unit];
-        let version = semver::Version::parse(&declared.version).with_context(|| {
-            format!(
-                "{}: the version of unit `{unit}`, `{}`",
-                declared.location, declared.version
-            )
+    // Units whose files lead to their next release, as a Maven snapshot
+    // does, hold no released version to vouch for.
+    if let Some(name) = args
+        .published
+        .iter()
+        .find(|name| !inspected.declared[name.as_str()].holds_release)
+    {
+        let declared = &inspected.declared[name.as_str()];
+        bail!(
+            "`--published` names `{name}`, whose files hold no released version: {} has {}, \
+             which leads to the next release; `init` takes its released version from its \
+             registry",
+            declared.location,
+            declared.version
+        );
+    }
+
+    // What adoption changes in the units' files, such as Maven producer
+    // properties, and what it refuses.
+    let mut adoption = Vec::new();
+    let mut refused = Vec::new();
+    for kind in AdapterKind::ALL {
+        let refs = repo.unit_refs(kind);
+        if refs.is_empty() {
+            continue;
+        }
+        let adopted = kind.adapter().adopt(&InspectRequest {
+            root: root.clone(),
+            units: refs,
+            released: Vec::new(),
         })?;
+        adoption.extend(adopted.files);
+        refused.extend(
+            adopted
+                .problems
+                .into_iter()
+                .map(|problem| problem.to_string()),
+        );
+    }
+    if !refused.is_empty() {
+        bail!(
+            "these units' files break the rules of their adapters, which `init` cannot fix:\n  {}",
+            refused.join("\n  ")
+        );
+    }
+
+    let seed = |manifest: &mut Manifest, unit: &str, version: semver::Version| {
         manifest.units.insert(
             unit.to_string(),
             manifest::Entry {
@@ -239,51 +280,105 @@ pub fn run(args: &InitArgs) -> Result<ExitCode> {
                 seeded: true,
             },
         );
-        Ok(())
+    };
+    let declared_version = |unit: &str| -> Result<semver::Version> {
+        let declared = &inspected.declared[unit];
+        semver::Version::parse(&declared.version).with_context(|| {
+            format!(
+                "{}: the version of unit `{unit}`, `{}`",
+                declared.location, declared.version
+            )
+        })
     };
     // A unit is seeded only with a version its registry lists, or that
     // `--published` vouches for: an unreachable, replaced or denying
     // registry looks like one without the package.
     let mut manifest = Manifest::default();
     for unit in &args.published {
-        seed(&mut manifest, unit)?;
+        seed(&mut manifest, unit, declared_version(unit)?);
     }
     let mut problems = Vec::new();
     for kind in AdapterKind::ALL {
-        let queries: Vec<VersionQuery> = units
-            .iter()
-            .filter(|unit| {
-                unit.adapter == kind
-                    && !args.new.contains(&unit.name)
-                    && !args.published.contains(&unit.name)
-            })
-            .map(|unit| VersionQuery {
+        let mut queries = Vec::new();
+        for unit in units.iter().filter(|unit| {
+            unit.adapter == kind
+                && !args.new.contains(&unit.name)
+                && !args.published.contains(&unit.name)
+        }) {
+            let declared = declared_version(&unit.name)?;
+            // A snapshot asks whether its release exists already.
+            let version = if inspected.declared[&unit.name].holds_release {
+                declared
+            } else {
+                semver::Version::new(declared.major, declared.minor, declared.patch)
+            };
+            queries.push(VersionQuery {
                 unit: UnitRef {
                     name: unit.name.clone(),
                     path: unit.path.clone(),
                 },
-                version: inspected.declared[&unit.name].version.clone(),
-            })
-            .collect();
+                version: version.to_string(),
+            });
+        }
         if queries.is_empty() {
             continue;
         }
         let publications = kind.adapter().published(&PublishedRequest {
             root: root.clone(),
+            units: repo.unit_refs(kind),
             queries,
+            released: Vec::new(),
+            work: None,
         })?;
         for publication in publications.units {
             let unit = &publication.unit;
-            if publication.published {
-                seed(&mut manifest, unit)?;
-                continue;
-            }
             let declared = &inspected.declared[unit];
             let registry = &publication.registry;
             let version = &declared.version;
+            if !declared.holds_release {
+                let next = declared_version(unit)?;
+                let next = semver::Version::new(next.major, next.minor, next.patch);
+                let highest = publication
+                    .highest
+                    .as_deref()
+                    .and_then(|highest| semver::Version::parse(highest).ok());
+                match (&publication.problem, publication.published, highest) {
+                    (Some(problem), _, _) => problems.push(format!(
+                        "unit `{unit}`: {registry} could not be asked: {problem}\n  Fix the tool, \
+                         the network or the configuration and run `cutwater init` again; if no \
+                         version of it was ever released, `--new {unit}` declares it new."
+                    )),
+                    (None, true, _) => problems.push(format!(
+                        "unit `{unit}`: {registry} holds {next}, the release that {version} in {} \
+                         leads to; set it to the snapshot of a later version, such as {}, and \
+                         run `cutwater init` again.",
+                        declared.location,
+                        snapshot_after(&next)
+                    )),
+                    (None, false, Some(highest)) if highest >= next => problems.push(format!(
+                        "unit `{unit}`: {registry} holds {highest}, which is not below {next}, \
+                         the release that {version} in {} leads to; set it to the snapshot of a \
+                         later version, such as {}, and run `cutwater init` again.",
+                        declared.location,
+                        snapshot_after(&highest)
+                    )),
+                    (None, false, Some(highest)) => seed(&mut manifest, unit, highest),
+                    // An unreachable, replaced or denying repository looks
+                    // like one without the unit.
+                    (None, false, None) => problems.push(format!(
+                        "unit `{unit}`: {registry} holds no final version of it. Pass `--new \
+                         {unit}` if it was never released."
+                    )),
+                }
+                continue;
+            }
+            if publication.published {
+                seed(&mut manifest, unit, declared_version(unit)?);
+                continue;
+            }
             let unlisted = match kind {
                 AdapterKind::Cargo => "not listed, as a yanked version is",
-                AdapterKind::Npm => "not listed",
+                AdapterKind::Npm | AdapterKind::Maven => "not listed",
             };
             problems.push(match (&publication.problem, &publication.highest) {
                 // The tool did not answer, so nothing says whether the unit
@@ -316,6 +411,10 @@ pub fn run(args: &InitArgs) -> Result<ExitCode> {
         .with_context(|| format!("cannot write {CONFIG_FILE}"))?;
     std::fs::write(root.join(MANIFEST_FILE), manifest.render())
         .with_context(|| format!("cannot write {MANIFEST_FILE}"))?;
+    for file in &adoption {
+        std::fs::write(root.join(&file.path), &file.content)
+            .with_context(|| format!("cannot write {}", file.path))?;
+    }
 
     if manifest.units.is_empty() {
         crate::outln!("Created {CONFIG_FILE} and {MANIFEST_FILE}.")?;
@@ -332,6 +431,16 @@ pub fn run(args: &InitArgs) -> Result<ExitCode> {
             "New, without a release yet: {}. Their first release is the version their files \
              declare.",
             args.new.join(", ")
+        )?;
+    }
+    if !adoption.is_empty() {
+        crate::outln!(
+            "Set the version properties of dependents to their producers' revisions in: {}.",
+            adoption
+                .iter()
+                .map(|file| file.path.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
         )?;
     }
     if let Some(changesets) = &changesets {
@@ -401,6 +510,16 @@ pub fn run(args: &InitArgs) -> Result<ExitCode> {
         crate::outln!("{note}")?;
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// The snapshot of the patch release after `version`.
+fn snapshot_after(version: &semver::Version) -> String {
+    format!(
+        "{}.{}.{}-SNAPSHOT",
+        version.major,
+        version.minor,
+        version.patch + 1
+    )
 }
 
 /// The Changesets configuration, `None` without one. Refuses what

@@ -3,6 +3,7 @@
 //! can carry them unchanged.
 
 mod cargo;
+mod maven;
 mod npm;
 mod pnpm;
 mod walk;
@@ -22,15 +23,19 @@ pub enum AdapterKind {
     Npm,
     /// Cargo crates: the members of a workspace, or a single crate.
     Cargo,
+    /// Maven units: an aggregator POM whose version is `${revision}`, with
+    /// the modules that share its version.
+    Maven,
 }
 
 impl AdapterKind {
-    pub const ALL: [AdapterKind; 2] = [AdapterKind::Npm, AdapterKind::Cargo];
+    pub const ALL: [AdapterKind; 3] = [AdapterKind::Npm, AdapterKind::Cargo, AdapterKind::Maven];
 
     pub fn name(self) -> &'static str {
         match self {
             AdapterKind::Npm => "npm",
             AdapterKind::Cargo => "cargo",
+            AdapterKind::Maven => "maven",
         }
     }
 
@@ -38,6 +43,7 @@ impl AdapterKind {
         match self {
             AdapterKind::Npm => &npm::Npm,
             AdapterKind::Cargo => &cargo::Cargo,
+            AdapterKind::Maven => &maven::Maven,
         }
     }
 }
@@ -105,6 +111,11 @@ pub struct InspectRequest {
     pub root: PathBuf,
     /// The adapter's units.
     pub units: Vec<UnitRef>,
+    /// The released version of every unit, as the manifest holds it, for
+    /// adapters whose files do not hold the version a dependent's last
+    /// release names; empty before the first release.
+    #[serde(default)]
+    pub released: Vec<VersionWrite>,
 }
 
 /// The units' versions and the dependencies on them.
@@ -115,10 +126,15 @@ pub struct Inspection {
     /// The references to the units from the packages of the repository,
     /// units or not.
     pub edges: Vec<Edge>,
+    /// What the files break of the adapter's rules for the default branch,
+    /// such as a Maven producer property out of step with its producer's
+    /// `revision`: `check` and `goal` fail on it, and other commands go on.
+    #[serde(default)]
+    pub problems: Vec<PackageProblem>,
 }
 
 /// The version a unit's files declare: for npm and Cargo, the version it
-/// was released at.
+/// was released at; for Maven, the snapshot that leads to its next release.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UnitVersion {
     pub name: String,
@@ -165,6 +181,10 @@ pub enum EdgeKind {
     /// Needed only to develop the dependent: npm `devDependencies`, Cargo
     /// `dev-dependencies`.
     Development,
+    /// A version the dependent manages for its consumers, as a Maven BOM's
+    /// `dependencyManagement` does: its release follows the dependency's,
+    /// but nothing needs the dependency to build or publish it.
+    Managed,
 }
 
 impl EdgeKind {
@@ -190,6 +210,7 @@ impl EdgeKind {
             EdgeKind::Peer => "peer",
             EdgeKind::Optional => "optional",
             EdgeKind::Development => "development",
+            EdgeKind::Managed => "managed",
         }
     }
 }
@@ -284,6 +305,13 @@ pub struct FileWrite {
     pub content: String,
 }
 
+/// What adoption changes in the units' files, and what it refuses.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Adoption {
+    pub files: Vec<FileWrite>,
+    pub problems: Vec<PackageProblem>,
+}
+
 /// The request about the lockfiles an adapter owns.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LockfileRequest {
@@ -330,6 +358,10 @@ pub trait Adapter: Sync {
     /// The lockfiles to refresh after the adapter's files changed.
     fn lockfiles(&self, request: &LockfileRequest) -> Result<Lockfiles, AdapterError>;
 
+    /// What adopting the tool changes in the units' files so that they follow
+    /// the adapter's rules, and what it cannot change and must refuse.
+    fn adopt(&self, request: &InspectRequest) -> Result<Adoption, AdapterError>;
+
     /// Asks each unit's registry, through the ecosystem's tool and the
     /// environment's settings, whether it holds a version of the unit.
     fn published(&self, request: &PublishedRequest) -> Result<Publications, AdapterError>;
@@ -370,6 +402,13 @@ pub struct PublishRequest {
     /// The adapter's units.
     pub units: Vec<UnitRef>,
     pub package: VersionQuery,
+    /// The released version of every unit of the repository, which a
+    /// release build passes on to the build.
+    pub released: Vec<VersionWrite>,
+    /// A directory of the whole run, empty at its start, for what one
+    /// request leaves to the later ones: the Maven adapter installs what it
+    /// built there, for the units that depend on it.
+    pub work: PathBuf,
 }
 
 /// What publishing a version did.
@@ -421,11 +460,30 @@ pub struct PackageProblem {
     pub message: String,
 }
 
+impl std::fmt::Display for PackageProblem {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.units.is_empty() {
+            f.write_str(&self.message)
+        } else {
+            write!(f, "{}: {}", self.units.join(", "), self.message)
+        }
+    }
+}
+
 /// The request to ask the units' registries about versions.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PublishedRequest {
     pub root: PathBuf,
+    /// The adapter's units.
+    pub units: Vec<UnitRef>,
     pub queries: Vec<VersionQuery>,
+    /// The released version of every unit of the repository, as the
+    /// manifest holds it; empty where none is known yet, as in `init`.
+    pub released: Vec<VersionWrite>,
+    /// The run's directory, as publication has it, when the working tree is
+    /// the release commit of the versions asked about: an adapter may build
+    /// them there to tell what their publication uploads.
+    pub work: Option<PathBuf>,
 }
 
 /// A version of a unit to look for in the unit's registry.
@@ -505,6 +563,17 @@ pub fn without_cargo_tokens(command: &mut std::process::Command) -> &mut std::pr
     command
 }
 
+/// The adapter error of a tool that cannot run, naming `file` and what the
+/// tool was run for, such as `asking the registry`.
+fn tool_error(err: &std::io::Error, tool: &str, file: &str, purpose: &str) -> AdapterError {
+    let problem = if err.kind() == std::io::ErrorKind::NotFound {
+        format!("{purpose} needs {tool}, which is not on the PATH")
+    } else {
+        format!("cannot run {tool}: {err}")
+    };
+    AdapterError::new(file, problem)
+}
+
 /// The captured result of an ecosystem tool, or the adapter error of a
 /// tool that cannot run, naming `file` and what the tool was run for, such
 /// as `asking the registry`.
@@ -521,14 +590,53 @@ fn run_tool(
         .envs(PLAIN_OUTPUT)
         .stdin(std::process::Stdio::null())
         .output()
-        .map_err(|err| {
-            let problem = if err.kind() == std::io::ErrorKind::NotFound {
-                format!("{purpose} needs {tool}, which is not on the PATH")
-            } else {
-                format!("cannot run {tool}: {err}")
-            };
-            AdapterError::new(file, problem)
+        .map_err(|err| tool_error(&err, tool, file, purpose))
+}
+
+/// The result of an ecosystem tool as [`run_tool`] captures it, while the
+/// tool's output also goes to standard error line by line as it runs, so
+/// that a long build shows its progress and leaves its log.
+fn stream_tool(
+    command: &mut std::process::Command,
+    tool: &str,
+    file: &str,
+    purpose: &str,
+) -> Result<std::process::Output, AdapterError> {
+    use std::io::{BufRead, Write};
+    if tool != "cargo" {
+        without_cargo_tokens(command);
+    }
+    let mut child = command
+        .envs(PLAIN_OUTPUT)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|err| tool_error(&err, tool, file, purpose))?;
+    let echo = |pipe: Box<dyn std::io::Read + Send>| {
+        std::thread::spawn(move || {
+            let mut kept = Vec::new();
+            for line in std::io::BufReader::new(pipe).split(b'\n') {
+                let Ok(line) = line else { break };
+                let mut stderr = std::io::stderr().lock();
+                let _ = stderr.write_all(&line);
+                let _ = stderr.write_all(b"\n");
+                kept.extend_from_slice(&line);
+                kept.push(b'\n');
+            }
+            kept
         })
+    };
+    let stdout = echo(Box::new(child.stdout.take().expect("stdout is piped")));
+    let stderr = echo(Box::new(child.stderr.take().expect("stderr is piped")));
+    let status = child
+        .wait()
+        .map_err(|err| tool_error(&err, tool, file, purpose))?;
+    Ok(std::process::Output {
+        status,
+        stdout: stdout.join().unwrap_or_default(),
+        stderr: stderr.join().unwrap_or_default(),
+    })
 }
 
 /// What a failed tool said: its standard error, or its standard output when

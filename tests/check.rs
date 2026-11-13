@@ -778,3 +778,90 @@ fn repository_checks_receive_the_units_and_the_plan() {
         })
     );
 }
+
+/// Maven units on `main`, released as `billing` 1.3.0, `ledger` 2.1.0 and
+/// `orders` 0.4.0, with the snapshots of their next patches, checked out on
+/// the branch `feature`.
+fn maven_units(units: &common::maven::Units) -> Repo {
+    let repo = Repo::with(
+        "[maven]\ndiscover = true\n",
+        &[(
+            ".cutwater/versions.toml",
+            "[units]\nbilling = \"1.3.0\"\nledger = \"2.1.0\"\norders = \"0.4.0\"\n",
+        )],
+    );
+    units.write(&repo);
+    repo.commit("maven units");
+    repo.git(&["checkout", "--quiet", "-b", "feature"]);
+    repo
+}
+
+#[test]
+fn maven_producer_property_out_of_step() {
+    let units = common::maven::Units::default();
+    let repo = maven_units(&units);
+    common::maven::Units {
+        billing_property: "1.3.0",
+        ..units
+    }
+    .write(&repo);
+    repo.write(
+        ".changeset/older-billing.md",
+        &changeset(
+            &[("orders", "patch")],
+            "Build against the released billing.",
+        ),
+    );
+    repo.commit("pin billing");
+    repo.cutwater()
+        .args(["check", "--base", "main"])
+        .assert()
+        .code(1)
+        .stderr(contains(
+            "orders/pom.xml: the property `billing.version` is `1.3.0`, but it refers to unit \
+             `billing`, whose revision is `1.3.1-SNAPSHOT`",
+        ));
+}
+
+#[test]
+fn maven_snapshot_below_the_released_version() {
+    let units = common::maven::Units::default();
+    let repo = maven_units(&units);
+    common::maven::Units {
+        ledger: "2.1.0-SNAPSHOT",
+        ..units
+    }
+    .write(&repo);
+    repo.write(
+        ".changeset/ledger.md",
+        &changeset(&[("ledger", "patch")], "Go back."),
+    );
+    repo.commit("ledger snapshot");
+    repo.cutwater()
+        .args(["check", "--base", "main"])
+        .assert()
+        .code(1)
+        .stderr(contains(
+            "do not lead to a version above the one .cutwater/versions.toml records:\n  \
+             ledger: .cutwater/versions.toml has 2.1.0, ledger/pom.xml `properties.revision` has \
+             2.1.0-SNAPSHOT",
+        ));
+}
+
+#[test]
+fn maven_revision_that_is_no_snapshot_of_a_semantic_version() {
+    let units = common::maven::Units::default();
+    let repo = maven_units(&units);
+    common::maven::Units {
+        billing: "1.0-SNAPSHOT",
+        ..units
+    }
+    .write(&repo);
+    repo.commit("two-part version");
+    for args in [&["check", "--base", "main"][..], &["status"]] {
+        repo.cutwater().args(args).assert().code(2).stderr(contains(
+            "billing/pom.xml: unit `billing` sets `revision` to `1.0-SNAPSHOT`, but a Maven \
+                 unit's revision is a semantic version followed by `-SNAPSHOT`",
+        ));
+    }
+}

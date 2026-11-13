@@ -243,7 +243,9 @@ fn nothing_to_release() {
         .arg("init")
         .assert()
         .code(2)
-        .stderr(contains("found no publishable npm package or Cargo crate"));
+        .stderr(contains(
+            "found no publishable npm package, Cargo crate or Maven unit",
+        ));
 }
 
 #[test]
@@ -585,4 +587,86 @@ fn crate_with_several_registries_is_refused() {
             "Cargo.toml: crate `tool` names the registries `internal`, `mirror` in `publish`",
         ));
     assert_eq!(registry.queries(), "");
+}
+
+#[test]
+fn maven_adoption_sets_producer_properties() {
+    let repo = Repo::new();
+    common::maven::Units {
+        billing_property: "1.2.0",
+        ..common::maven::Units::default()
+    }
+    .write(&repo);
+    repo.commit("maven units");
+    repo.cutwater()
+        .args([
+            "init", "--new", "billing", "--new", "ledger", "--new", "orders",
+        ])
+        .assert()
+        .success()
+        .stdout(contains(
+            "Set the version properties of dependents to their producers' revisions in: \
+             orders/pom.xml.",
+        ));
+    assert!(
+        repo.read("orders/pom.xml")
+            .contains("<billing.version>1.3.1-SNAPSHOT</billing.version>")
+    );
+    assert!(
+        repo.read(".cutwater/config.toml")
+            .contains("[maven]\ndiscover = true\n")
+    );
+    repo.cutwater()
+        .args(["check", "--base", "HEAD"])
+        .assert()
+        .success();
+}
+
+#[test]
+fn maven_literal_producer_version_is_refused() {
+    let repo = Repo::new();
+    common::maven::Units::default().write(&repo);
+    repo.write(
+        "orders/pom.xml",
+        &common::maven::Units::default().orders_pom().replace(
+            "<version>${billing.version}</version>",
+            "<version>1.3.0</version>",
+        ),
+    );
+    repo.commit("maven units");
+    let before = repo.snapshot();
+    repo.cutwater()
+        .args([
+            "init", "--new", "billing", "--new", "ledger", "--new", "orders",
+        ])
+        .assert()
+        .code(2)
+        .stderr(contains(
+            "orders: orders/pom.xml: `com.acme:billing-api` of unit `billing` has the version \
+             `1.3.0`; a unit refers to another through a version property",
+        ));
+    assert_eq!(repo.snapshot(), before);
+    repo.cutwater()
+        .args(["init", "--published", "billing"])
+        .assert()
+        .code(2)
+        .stderr(contains(
+            "`--published` names `billing`, whose files hold no released version",
+        ));
+}
+
+#[test]
+fn malformed_pom_outside_maven_units_is_ignored() {
+    let repo = Repo::new();
+    repo.write(
+        "package.json",
+        "{\n  \"name\": \"tool\",\n  \"version\": \"0.1.0\"\n}\n",
+    );
+    repo.write("fixtures/broken/pom.xml", "<project><artifactId>");
+    repo.commit("package");
+    repo.cutwater()
+        .args(["init", "--new", "tool"])
+        .assert()
+        .success();
+    assert!(!repo.read(".cutwater/config.toml").contains("[maven]"));
 }

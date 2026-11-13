@@ -542,3 +542,222 @@ fn closed_standard_output_ends_quietly_before_anything_is_written() {
     }
     assert_eq!(repo.snapshot(), before);
 }
+
+/// Maven units released as `billing` 1.3.0, `ledger` 2.1.0 and `orders`
+/// 0.4.0, or as `manifest` says, with the snapshots of `units`.
+fn maven_units(units: &common::maven::Units, manifest: &str) -> Repo {
+    let repo = Repo::with(
+        "[maven]\ndiscover = true\n",
+        &[(".cutwater/versions.toml", manifest)],
+    );
+    units.write(&repo);
+    repo.commit("maven units");
+    repo
+}
+
+const MAVEN_RELEASED: &str =
+    "[units]\nbilling = \"1.3.0\"\nledger = \"2.1.0\"\norders = \"0.4.0\"\n";
+
+/// The value of the property `name` that the POM `file` defines.
+fn property(repo: &Repo, file: &str, name: &str) -> String {
+    let text = repo.read(file);
+    let start = text.find(&format!("<{name}>")).unwrap() + name.len() + 2;
+    let end = start + text[start..].find('<').unwrap();
+    text[start..end].to_string()
+}
+
+#[test]
+fn maven_release_writes_the_next_snapshots() {
+    let repo = maven_units(&common::maven::Units::default(), MAVEN_RELEASED);
+    repo.write(
+        ".changeset/invoices.md",
+        &changeset(&[("billing", "minor")], "Add invoices."),
+    );
+    repo.cutwater()
+        .arg("version")
+        .assert()
+        .success()
+        .stdout(contains("billing 1.3.0 -> 1.4.0: minor"))
+        .stdout(contains(
+            "orders 0.4.0 -> 0.4.1: billing 1.4.0 is outside its runtime range [1.3.0]",
+        ));
+    // The deployed POM of `orders` names `billing`'s version exactly, so
+    // `orders` is released with it.
+    expect_test::expect![[r#"
+        # The released version of every unit. Only `cutwater init` and `cutwater version`
+        # write this file.
+
+        [units]
+        billing = "1.4.0"
+        ledger = "2.1.0"
+        orders = "0.4.1"
+    "#]]
+    .assert_eq(&repo.read(".cutwater/versions.toml"));
+    assert_eq!(
+        property(&repo, "billing/pom.xml", "revision"),
+        "1.4.1-SNAPSHOT"
+    );
+    assert_eq!(
+        property(&repo, "orders/pom.xml", "billing.version"),
+        "1.4.1-SNAPSHOT"
+    );
+    assert_eq!(
+        property(&repo, "orders/pom.xml", "revision"),
+        "0.4.2-SNAPSHOT"
+    );
+    assert!(
+        repo.read("billing/CHANGELOG.md")
+            .starts_with("# com.acme:billing\n\n## 1.4.0\n")
+    );
+    expect_test::expect![[r#"
+        # com.acme:orders
+
+        ## 0.4.1
+
+        ### Patch Changes
+
+        - Updated dependencies
+          - billing@1.4.0
+    "#]]
+    .assert_eq(&repo.read("orders/CHANGELOG.md"));
+}
+
+#[test]
+fn maven_test_dependency_releases_no_dependent() {
+    let units = common::maven::Units::default();
+    let repo = maven_units(&units, MAVEN_RELEASED);
+    repo.write(
+        "orders/pom.xml",
+        &units.orders_pom().replace(
+            "<artifactId>billing-api</artifactId>\n      <version>${billing.version}</version>\n      <type>pom</type>\n",
+            "<artifactId>billing-api</artifactId>\n      <version>${billing.version}</version>\n      <type>pom</type>\n      <scope>test</scope>\n",
+        ),
+    );
+    repo.commit("test scope");
+    repo.write(
+        ".changeset/invoices.md",
+        &changeset(&[("billing", "minor")], "Add invoices."),
+    );
+    repo.cutwater().arg("version").assert().success();
+    assert!(
+        repo.read(".cutwater/versions.toml")
+            .contains("orders = \"0.4.0\"")
+    );
+    assert_eq!(
+        property(&repo, "orders/pom.xml", "billing.version"),
+        "1.4.1-SNAPSHOT"
+    );
+}
+
+#[test]
+fn maven_bom_that_manages_a_unit_importing_it() {
+    let units = common::maven::Units::default();
+    let repo = maven_units(
+        &units,
+        "[units]\nbilling = \"1.3.0\"\nledger = \"2.1.0\"\norders = \"0.4.0\"\nplatform = \"1.0.0\"\n",
+    );
+    repo.write(
+        "platform/pom.xml",
+        "<project xmlns=\"http://maven.apache.org/POM/4.0.0\">\n  <modelVersion>4.0.0</modelVersion>\n  \
+         <groupId>com.acme</groupId>\n  <artifactId>platform</artifactId>\n  <version>${revision}</version>\n  \
+         <packaging>pom</packaging>\n  <properties>\n    <revision>1.0.1-SNAPSHOT</revision>\n    \
+         <orders.version>0.4.1-SNAPSHOT</orders.version>\n  </properties>\n  <dependencyManagement>\n    \
+         <dependencies>\n      <dependency>\n        <groupId>com.acme</groupId>\n        \
+         <artifactId>orders</artifactId>\n        <version>${orders.version}</version>\n      </dependency>\n    \
+         </dependencies>\n  </dependencyManagement>\n</project>\n",
+    );
+    repo.write(
+        "orders/pom.xml",
+        &units
+            .orders_pom()
+            .replace(
+                "    <ledger.version>",
+                "    <platform.version>1.0.1-SNAPSHOT</platform.version>\n    <ledger.version>",
+            )
+            .replace(
+                "  <dependencies>\n",
+                "  <dependencyManagement>\n    <dependencies>\n      <dependency>\n        \
+                 <groupId>com.acme</groupId>\n        <artifactId>platform</artifactId>\n        \
+                 <version>${platform.version}</version>\n        <type>pom</type>\n        \
+                 <scope>import</scope>\n      </dependency>\n    </dependencies>\n  \
+                 </dependencyManagement>\n  <dependencies>\n",
+            ),
+    );
+    repo.commit("platform");
+    repo.write(
+        ".changeset/invoices.md",
+        &changeset(&[("billing", "minor")], "Add invoices."),
+    );
+    // `platform` manages `orders`' version, and `orders` imports
+    // `platform`: both follow `billing`, and `platform` is no cycle for
+    // publication, which managing a version does not order.
+    repo.cutwater()
+        .arg("version")
+        .assert()
+        .success()
+        .stdout(contains(
+            "Releases, in the order of publication:\n  billing 1.3.0 -> 1.4.0: minor",
+        ));
+    let manifest = repo.read(".cutwater/versions.toml");
+    for entry in [
+        "billing = \"1.4.0\"",
+        "orders = \"0.4.1\"",
+        "platform = \"1.0.1\"",
+    ] {
+        assert!(manifest.contains(entry), "{entry}\n{manifest}");
+    }
+}
+
+#[test]
+fn maven_prerelease_leads_to_its_final_version() {
+    let repo = maven_units(&common::maven::Units::default(), MAVEN_RELEASED);
+    repo.cutwater()
+        .args(["pre", "enter", "beta"])
+        .assert()
+        .success();
+    repo.write(
+        ".changeset/invoices.md",
+        &changeset(&[("billing", "minor")], "Add invoices."),
+    );
+    repo.cutwater().arg("version").assert().success();
+    assert!(
+        repo.read(".cutwater/versions.toml")
+            .contains("billing = \"1.4.0-beta.0\"")
+    );
+    assert_eq!(
+        property(&repo, "billing/pom.xml", "revision"),
+        "1.4.0-SNAPSHOT"
+    );
+    assert_eq!(
+        property(&repo, "orders/pom.xml", "billing.version"),
+        "1.4.0-SNAPSHOT"
+    );
+}
+
+#[test]
+fn maven_first_release_of_a_new_unit() {
+    let repo = maven_units(
+        &common::maven::Units {
+            orders: "0.1.0-SNAPSHOT",
+            ..common::maven::Units::default()
+        },
+        "[units]\nbilling = \"1.3.0\"\nledger = \"2.1.0\"\n",
+    );
+    repo.write(
+        ".changeset/orders.md",
+        &changeset(&[("orders", "minor")], "First release."),
+    );
+    repo.cutwater()
+        .arg("version")
+        .assert()
+        .success()
+        .stdout(contains("orders new -> 0.1.0"));
+    assert!(
+        repo.read(".cutwater/versions.toml")
+            .contains("orders = \"0.1.0\"")
+    );
+    assert_eq!(
+        property(&repo, "orders/pom.xml", "revision"),
+        "0.1.1-SNAPSHOT"
+    );
+}

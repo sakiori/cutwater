@@ -5,7 +5,8 @@ spec:
       description: >-
         The image the jobs run in. It needs a POSIX shell, git 2.15 or newer, curl, tar,
         gzip and sha256sum or shasum, and the tools of the repository's ecosystems:
-        cargo for Cargo units, npm or pnpm for npm units.
+        cargo for Cargo units, npm or pnpm for npm units, Maven 3.9 or later and a JDK
+        for Maven units.
     setup:
       type: array
       default: []
@@ -17,8 +18,9 @@ spec:
       default: []
       description: >-
         Commands `cutwater-goal` and `cutwater-publish` run after `setup` and before
-        the tool: registry credentials, the workspace's installation, which packing
-        with lifecycle scripts needs, and files that CI built for the packages.
+        the tool: registry credentials, such as Maven's settings, the workspace's
+        installation, which packing with lifecycle scripts needs, and files that CI
+        built for the packages.
     release-branch:
       default: cutwater/release
       regex: ^[^"\s]+$

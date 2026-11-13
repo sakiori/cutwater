@@ -17,7 +17,10 @@ use std::collections::BTreeMap;
 use anyhow::{Context, Result};
 use semver::Version;
 
-use crate::adapter::{AcceptsRequest, AdapterKind, Edge, InspectRequest, UnitRef, UnitVersion};
+use crate::adapter::{
+    AcceptsRequest, AdapterKind, Edge, InspectRequest, PackageProblem, UnitRef, UnitVersion,
+    VersionWrite,
+};
 use crate::changeset::{self, Changeset};
 use crate::checks::{self, PlanInput, UnitInput};
 use crate::config::{CheckStep, Config};
@@ -86,6 +89,23 @@ pub struct Inspected {
     pub declared: BTreeMap<String, UnitVersion>,
     /// The references to units.
     pub edges: Vec<Edge>,
+    /// What the units' files break of their adapters' rules.
+    pub problems: Vec<PackageProblem>,
+}
+
+impl Inspected {
+    /// Prints what the units' files break of their adapters' rules; `true`
+    /// when they break none.
+    pub fn print_problems(&self) -> bool {
+        if self.problems.is_empty() {
+            return true;
+        }
+        eprintln!("error: these units' files break the rules of their adapters:");
+        for problem in &self.problems {
+            eprintln!("  {problem}");
+        }
+        false
+    }
 }
 
 /// The plan of the working tree and what it rests on.
@@ -130,6 +150,15 @@ impl Repository {
     pub fn inspect(&self) -> Result<Inspected> {
         let mut declared = BTreeMap::new();
         let mut edges = Vec::new();
+        let mut problems = Vec::new();
+        let released: Vec<VersionWrite> = Manifest::load(self.git.root())?
+            .units
+            .iter()
+            .map(|(unit, entry)| VersionWrite {
+                unit: unit.clone(),
+                version: entry.version.to_string(),
+            })
+            .collect();
         for kind in AdapterKind::ALL {
             let units = self.unit_refs(kind);
             if units.is_empty() {
@@ -138,13 +167,19 @@ impl Repository {
             let inspection = kind.adapter().inspect(&InspectRequest {
                 root: self.git.root().to_path_buf(),
                 units,
+                released: released.clone(),
             })?;
             for unit in inspection.units {
                 declared.insert(unit.name.clone(), unit);
             }
             edges.extend(inspection.edges);
+            problems.extend(inspection.problems);
         }
-        Ok(Inspected { declared, edges })
+        Ok(Inspected {
+            declared,
+            edges,
+            problems,
+        })
     }
 
     /// The plan of the pending changesets of the working tree.

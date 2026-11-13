@@ -42,6 +42,15 @@
         "$ref": "#/$defs/GroupSettings"
       }
     },
+    "maven": {
+      "description": "The Maven adapter's settings. Its discovery finds the aggregator\nPOMs whose version is `${revision}` and that define `revision`\nthemselves, outside the modules of another such POM, wherever they\nlie in the repository; each is a unit, named after its `artifactId`.",
+      "$ref": "#/$defs/AdapterSettings",
+      "default": {
+        "discover": false,
+        "exclude": [],
+        "tag": null
+      }
+    },
     "npm": {
       "description": "The npm adapter's settings. Its discovery finds the packages of a\npnpm workspace (`pnpm-workspace.yaml`), an npm workspace\n(`workspaces` in `package.json`) or a single `package.json`, at the\nrepository root.",
       "$ref": "#/$defs/AdapterSettings",
@@ -91,6 +100,11 @@
           "description": "Cargo crates: the members of a workspace, or a single crate.",
           "type": "string",
           "const": "cargo"
+        },
+        {
+          "description": "Maven units: an aggregator POM whose version is `${revision}`, with\nthe modules that share its version.",
+          "type": "string",
+          "const": "maven"
         }
       ]
     },

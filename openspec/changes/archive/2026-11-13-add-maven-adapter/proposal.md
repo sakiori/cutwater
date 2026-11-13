@@ -4,10 +4,11 @@ Maven projects with several independently versioned units need what cutwater giv
 
 ## What changes
 
-- **Maven units.** An aggregator POM whose version is `${revision}` is one unit, released with the modules that share its version. The adapter reads units and the edges between them from the POMs without running Maven, and supports Maven 3 with the flatten plugin resolving `revision` and interpolating dependencies.
+- **Maven units.** An aggregator POM whose version is `${revision}` is one unit, released with the modules that share its version. The adapter reads units and the edges between them from the POMs without running Maven, and supports Maven 3.9 or a later Maven 3 with the flatten plugin resolving `revision` and interpolating dependencies.
 - **Snapshots on the default branch.** A unit's committed `revision` is always the snapshot of its next version, and a dependent refers to a producer through a version property kept equal to the producer's `revision`. `version` writes the next snapshots; the released versions live in the version manifest alone.
 - **Adoption.** `init` sets the producer properties and seeds each unit from the highest final version its deploy repository holds.
-- **Release builds and deployment.** A release builds only the units it publishes, one Maven invocation each in dependency order, with the released versions on the command line. `goal` refuses a deployed POM that carries a snapshot or an unresolved property, and `publish` deploys only the modules the deploy repository lacks, so an interrupted deployment can be completed.
+- **Dependents follow their producers.** A deployed POM names one version of each dependency, which Maven's nearest-wins mediation gives its consumers, so a unit is released with a patch whenever a unit it depends on at run time, or whose version it manages as a BOM, is released.
+- **Release builds and deployment.** A release builds only the units it publishes, one Maven invocation each in dependency order, with the released versions on the command line. `goal` refuses a deployed POM that carries a snapshot or an unresolved property, and `publish` deploys only the files the deploy repository lacks, so an interrupted deployment can be completed.
 
 Maven Central's Portal, Nexus staging repositories and Maven 4 are out of scope: the first two publish atomically or hide unreleased deployments and need target types of their own.
 
@@ -21,7 +22,7 @@ None.
 
 - `ecosystem-adapters`: the Maven adapter.
 - `release-intent`: a Maven aggregator with the modules that share its version is a unit.
-- `release-versioning`: the first release of a new Maven unit.
+- `release-versioning`: the first release of a new Maven unit, releases caused by versions a BOM manages, and the Maven dependencies that order publication.
 
 ## Impact
 

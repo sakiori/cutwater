@@ -1233,3 +1233,57 @@ fn group_rules_need_a_project_shared_with_the_group() {
     publish(&repo, &gitlab, &registry).assert().success();
     create.expect(2).assert();
 }
+
+#[test]
+fn missing_maven_is_named_before_anything_is_published() {
+    let repo = Repo::with(
+        "[maven]\ndiscover = true\n",
+        &[(
+            ".cutwater/versions.toml",
+            "[units]\nbilling = { version = \"1.3.0\", seeded = true }\n\
+             ledger = { version = \"2.1.0\", seeded = true }\n\
+             orders = { version = \"0.4.0\", seeded = true }\n",
+        )],
+    );
+    common::maven::Units::default().write(&repo);
+    repo.commit("maven units");
+    repo.write(
+        ".cutwater/versions.toml",
+        "[units]\nbilling = \"1.4.0\"\nledger = { version = \"2.1.0\", seeded = true }\n\
+         orders = { version = \"0.4.0\", seeded = true }\n",
+    );
+    common::maven::Units {
+        billing: "1.4.1-SNAPSHOT",
+        billing_property: "1.4.1-SNAPSHOT",
+        ..common::maven::Units::default()
+    }
+    .write(&repo);
+    repo.write(
+        "billing/CHANGELOG.md",
+        "# com.acme:billing\n\n## 1.4.0\n\n### Minor Changes\n\n- Add invoices.\n",
+    );
+    repo.commit("Release");
+    let registry = Registry::new(&[]);
+    let mut gitlab = GitLab::new();
+    gitlab.no_tag("billing-v1.4.0");
+    let writes = gitlab.no_writes();
+    // git and the system's tools, but no Maven.
+    let git = which::which("git").unwrap();
+    let path = std::env::join_paths(
+        [git.parent().unwrap().to_path_buf()]
+            .into_iter()
+            .chain(["/usr/bin".into(), "/bin".into()]),
+    )
+    .unwrap();
+    assert!(which::which_in("mvn", Some(&path), ".").is_err());
+    publish(&repo, &gitlab, &registry)
+        .env("PATH", path)
+        .assert()
+        .code(2)
+        .stderr(contains(
+            "publishing the maven units needs mvn, which is not on the PATH",
+        ));
+    for mock in writes {
+        mock.assert();
+    }
+}

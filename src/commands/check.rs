@@ -29,6 +29,7 @@ pub fn run(args: &CheckArgs) -> Result<ExitCode> {
     let inspected = repo.inspect()?;
     let disagreements = disagreements(&manifest, &inspected.declared);
     let mut sound = print_disagreements(&disagreements);
+    sound &= inspected.print_problems();
     // A tree that cannot be planned would stop every later release.
     if let Err(err) = plan::plannable(&repo.units, &inspected.declared, &inspected.edges) {
         eprintln!("error: this tree cannot be planned: {err:#}");
@@ -103,16 +104,22 @@ fn exit_code(passed: bool) -> ExitCode {
     }
 }
 
-/// A unit whose files declare another version than the manifest holds.
+/// A unit whose files declare another version than the manifest holds, or
+/// whose files lead to a next release that is not above it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Disagreement {
     pub unit: String,
     pub manifest: String,
     pub declared: String,
     pub location: String,
+    /// Whether the files lead to the next release, as a snapshot does,
+    /// rather than hold the released version.
+    pub leads: bool,
 }
 
-/// The units whose files declare another version than the manifest holds;
+/// The units whose files declare another version than the manifest holds,
+/// and those whose files lead to a next release, as a Maven snapshot does,
+/// whose version without its prerelease part is not above the released one;
 /// a unit without a manifest entry is new and declares its first release.
 pub fn disagreements(
     manifest: &Manifest,
@@ -120,16 +127,23 @@ pub fn disagreements(
 ) -> Vec<Disagreement> {
     declared
         .iter()
-        .filter(|(_, declared)| declared.holds_release)
         .filter_map(|(unit, declared)| {
             let entry = manifest.get(unit)?;
-            let agrees = semver::Version::parse(&declared.version)
-                .is_ok_and(|version| version == entry.version);
+            let version = semver::Version::parse(&declared.version).ok();
+            let agrees = match &version {
+                Some(version) if declared.holds_release => *version == entry.version,
+                Some(version) => {
+                    semver::Version::new(version.major, version.minor, version.patch)
+                        > entry.version
+                }
+                None => false,
+            };
             (!agrees).then(|| Disagreement {
                 unit: unit.clone(),
                 manifest: entry.version.to_string(),
                 declared: declared.version.clone(),
                 location: declared.location.to_string(),
+                leads: !declared.holds_release,
             })
         })
         .collect()
@@ -137,21 +151,45 @@ pub fn disagreements(
 
 /// Prints the disagreements; `true` when there is none.
 pub(super) fn print_disagreements(disagreements: &[Disagreement]) -> bool {
-    if disagreements.is_empty() {
-        return true;
-    }
-    eprintln!("error: these units' files do not hold the version {MANIFEST_FILE} records:");
-    for disagreement in disagreements {
+    let (leading, holding): (Vec<&Disagreement>, Vec<&Disagreement>) = disagreements
+        .iter()
+        .partition(|disagreement| disagreement.leads);
+    if !holding.is_empty() {
+        eprintln!("error: these units' files do not hold the version {MANIFEST_FILE} records:");
+        for disagreement in holding {
+            eprintln!(
+                "  {}: {MANIFEST_FILE} has {}, {} has {}",
+                disagreement.unit,
+                disagreement.manifest,
+                disagreement.location,
+                disagreement.declared
+            );
+        }
         eprintln!(
-            "  {}: {MANIFEST_FILE} has {}, {} has {}",
-            disagreement.unit, disagreement.manifest, disagreement.location, disagreement.declared
+            "Only `cutwater version` changes released versions; restore the files' versions and \
+             add a changeset for the release instead."
         );
     }
-    eprintln!(
-        "Only `cutwater version` changes released versions; restore the files' versions and \
-         add a changeset for the release instead."
-    );
-    false
+    if !leading.is_empty() {
+        eprintln!(
+            "error: these units' files do not lead to a version above the one {MANIFEST_FILE} \
+             records:"
+        );
+        for disagreement in leading {
+            eprintln!(
+                "  {}: {MANIFEST_FILE} has {}, {} has {}",
+                disagreement.unit,
+                disagreement.manifest,
+                disagreement.location,
+                disagreement.declared
+            );
+        }
+        eprintln!(
+            "A snapshot leads to the release of its version without `-SNAPSHOT`, which must be \
+             above the released one; `cutwater version` writes the next one after each release."
+        );
+    }
+    disagreements.is_empty()
 }
 
 /// The verdict of `check` and what it rests on.
@@ -442,7 +480,50 @@ mod tests {
                 manifest: "1.4.2".to_string(),
                 declared: "1.5.0".to_string(),
                 location: "api/file `version`".to_string(),
+                leads: false,
             }]
         );
+    }
+
+    #[test]
+    fn snapshots_lead_above_the_released_version() {
+        let manifest = Manifest::parse(
+            "[units]
+billing = \"1.3.0\"
+ledger = \"2.1.0\"
+orders = \"1.5.0-beta.0\"\n\
+             audit = { version = \"0.9.0\", seeded = true }\n",
+        )
+        .unwrap();
+        let snapshot = |name: &str, version: &str| {
+            (
+                name.to_string(),
+                UnitVersion {
+                    name: name.to_string(),
+                    package: name.to_string(),
+                    version: version.to_string(),
+                    holds_release: false,
+                    location: Location {
+                        file: format!("{name}/pom.xml"),
+                        keys: vec!["properties".to_string(), "revision".to_string()],
+                    },
+                },
+            )
+        };
+        let found = disagreements(
+            &manifest,
+            &BTreeMap::from([
+                snapshot("billing", "1.4.0-SNAPSHOT"),
+                snapshot("ledger", "2.1.0-SNAPSHOT"),
+                snapshot("orders", "1.5.0-SNAPSHOT"),
+                snapshot("audit", "0.8.1-SNAPSHOT"),
+                snapshot("new", "0.1.0-SNAPSHOT"),
+            ]),
+        );
+        let found: Vec<(&str, bool)> = found
+            .iter()
+            .map(|disagreement| (disagreement.unit.as_str(), disagreement.leads))
+            .collect();
+        assert_eq!(found, [("audit", true), ("ledger", true)]);
     }
 }

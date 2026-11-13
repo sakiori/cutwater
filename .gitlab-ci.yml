@@ -3,10 +3,11 @@
 # - A merge request pipeline checks the change: formatting, Clippy, the
 #   tests, which also run npm, pnpm and cargo, with the image's git and with
 #   the oldest supported git, publication to local npm and Cargo
-#   registries, the CI/CD component's steps with cosign, the minimum
-#   supported Rust version, cargo-deny, the crate's package, the pipeline's
-#   scripts and the OpenSpec specification, and the Linux release builds
-#   when the change can affect them. cutwater-check, of the CI/CD component,
+#   registries, Maven's release builds and deployments, the CI/CD
+#   component's steps with cosign, the minimum supported Rust version,
+#   cargo-deny, the crate's package, the pipeline's scripts and the OpenSpec
+#   specification, and the Linux release builds when the change can affect
+#   them. cutwater-check, of the CI/CD component,
 #   checks its changesets. A pipeline started by hand runs the same checks.
 # - The release merge request's pipeline builds the four release targets and
 #   runs cutwater-goal, which checks the crate and the npm packages that the
@@ -178,6 +179,32 @@ test-registries:
     - export CUTWATER_TEST_VERDACCIO="$CI_PROJECT_DIR/.gitlab/verdaccio/node_modules/.bin/verdaccio"
     - export CUTWATER_TEST_CARGO_HTTP_REGISTRY="$TOOLS/bin/cargo-http-registry"
     - cargo test --locked --test registries -- --ignored
+
+# The tests that run Maven on the runner, as the Maven adapter does for
+# Maven units: release builds, deployment to a file repository and the
+# questions to it, with Maven and a JDK that install-tools.sh pins. The
+# plugins the tests run come from Maven Central once, into the cached
+# target/tmp/maven-plugins.
+test-maven:
+  extends: .check
+  # The cached target directory keeps the plugins the tests resolve ahead;
+  # a new list of them starts a new cache.
+  cache:
+    key:
+      files:
+        - Cargo.lock
+        - tests/fixtures/maven-plugins.txt
+      prefix: $CI_JOB_NAME_SLUG
+    paths:
+      - .cargo/registry/index
+      - .cargo/registry/cache
+      - target/
+  script:
+    - .gitlab/scripts/install-tools.sh "$TOOLS" java maven
+    - export JAVA_HOME="$TOOLS/java" PATH="$TOOLS/bin:$PATH"
+    - mvn --version
+    - export CUTWATER_TEST_MVN="$TOOLS/bin/mvn"
+    - cargo test --locked --test maven -- --ignored
 
 # The tests against the oldest git the README supports, built from source.
 test-git:

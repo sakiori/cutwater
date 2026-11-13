@@ -11,10 +11,11 @@ cargo fmt --all --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
 ```
 
-Two groups of tests are ignored by default, because they need tools of their own, which their CI jobs install with the versions and checksums that `.gitlab/scripts/install-tools.sh` and the lockfiles under `.gitlab/` pin:
+Three groups of tests are ignored by default, because they need tools of their own, which their CI jobs install with the versions and checksums that `.gitlab/scripts/install-tools.sh` and the lockfiles under `.gitlab/` pin:
 
 - `tests/registries.rs` publishes to a local Verdaccio and a local cargo-http-registry, named by `CUTWATER_TEST_VERDACCIO` and `CUTWATER_TEST_CARGO_HTTP_REGISTRY`: `npm ci --prefix .gitlab/verdaccio --ignore-scripts` installs Verdaccio, and `cargo test --locked --test registries -- --ignored` runs them.
 - `tests/component.rs` runs cosign 3.1.4 and shellcheck 0.11.0 on the CI/CD component's steps, named by `CUTWATER_TEST_COSIGN` and `CUTWATER_TEST_SHELLCHECK`: `cargo test --locked --test component -- --ignored` runs them.
+- `tests/maven.rs` runs Maven 3.9.16 on a JDK 25, named by `CUTWATER_TEST_MVN`, with settings and local repositories of its own and `file://` and HTTP deploy repositories on the machine; the plugins the tests run come from Maven Central once, into `target/tmp/maven-plugins`, which the tests' settings then make the mirror of Maven Central: `cargo test --locked --test maven -- --ignored` runs them.
 
 Merge request pipelines also build with the oldest supported Rust and test against the oldest supported git, run `cargo deny check` as `deny.toml` configures it, package the crate, run shellcheck on `.gitlab/scripts/`, validate the OpenSpec specification, and, when a change can affect the build, build the Linux release archives. `.gitlab/scripts/build-release.sh <target>` builds an archive: a Linux target with cargo-zigbuild and zig, a macOS target on macOS with the Xcode Command Line Tools, each with cargo-about 0.9.2 and the toolchain's `rust-src` component for the third-party notices, which `cargo run --locked -p xtask -- notices <dir> <target>` writes. `install-tools.sh` installs the pinned tools on x86_64 Linux, and rustup-init and cargo-about on Apple silicon macOS.
 

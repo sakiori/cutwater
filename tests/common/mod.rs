@@ -2,6 +2,7 @@
 
 #![allow(dead_code)]
 
+pub mod maven;
 pub mod publish;
 
 use std::path::Path;

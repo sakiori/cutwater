@@ -10,7 +10,7 @@
 # usage: .gitlab/scripts/install-tools.sh <dir> <tool>...
 #   tools: cargo-deny, shellcheck, node (with npm), pnpm, cargo-http-registry,
 #          cosign, zig, cargo-zigbuild, cargo-about (also on macOS), rustup
-#          (rustup-init, on macOS)
+#          (rustup-init, on macOS), java (a JDK, in <dir>/java), maven
 set -eu
 
 dir=${1:?usage: install-tools.sh <dir> <tool>...}
@@ -155,6 +155,25 @@ for tool in "$@"; do
       fetch "https://static.rust-lang.org/rustup/archive/$version/aarch64-apple-darwin/rustup-init" \
         ec1b9233e7f72990ecd8e62063fa7f6c3dfc2bec8e97f88bff165f9100ac696a "$dir/bin/rustup-init"
       chmod 0755 "$dir/bin/rustup-init"
+      ;;
+    java)
+      # The JDK that Maven runs on in the Maven tests: Eclipse Temurin 25, the
+      # current long-term Java release.
+      [ "$host" = Linux-x86_64 ] || unpinned
+      version=25.0.5+8
+      unpack_all "https://github.com/adoptium/temurin25-binaries/releases/download/jdk-$(printf %s "$version" | sed 's/+/%2B/')/OpenJDK25U-jdk_x64_linux_hotspot_$(printf %s "$version" | tr + _).tar.gz" \
+        68982529869257d0ee6b824ec5aa270ff8b118bb438670da0b97ebdab178d7fb \
+        java 1
+      ln -sf ../java/bin/java "$dir/bin/java"
+      ;;
+    maven)
+      # Maven 3 for the Maven tests, from Maven Central; it needs java.
+      [ "$host" = Linux-x86_64 ] || unpinned
+      version=3.9.16
+      unpack_all "https://repo.maven.apache.org/maven2/org/apache/maven/apache-maven/$version/apache-maven-$version-bin.tar.gz" \
+        80ffca22aed9e8b9713a232f3394fd81d7f20322df75efdb2b047dbd3e3a23bb \
+        maven 1
+      ln -sf ../maven/bin/mvn "$dir/bin/mvn"
       ;;
     *)
       echo "unknown tool: $tool" >&2

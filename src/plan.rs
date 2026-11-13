@@ -163,16 +163,26 @@ pub fn plan(input: &Input, accepts: &Accepts) -> Result<Plan> {
     let exiting = pre.is_some_and(|pre| pre.mode == Mode::Exit);
     let mut units: BTreeMap<&str, UnitPlan> = BTreeMap::new();
     for unit in input.units.iter() {
+        // Files that lead to the next release, as a snapshot does, declare
+        // that release without its prerelease part.
         let declared = input
             .declared
             .get(&unit.name)
             .map(|declared| {
-                Version::parse(&declared.version).with_context(|| {
-                    format!(
-                        "{}: unit `{}`: `{}` is not a semantic version",
-                        declared.location, unit.name, declared.version
-                    )
-                })
+                Version::parse(&declared.version)
+                    .map(|version| {
+                        if declared.holds_release {
+                            version
+                        } else {
+                            final_version(&version)
+                        }
+                    })
+                    .with_context(|| {
+                        format!(
+                            "{}: unit `{}`: `{}` is not a semantic version",
+                            declared.location, unit.name, declared.version
+                        )
+                    })
             })
             .transpose()?;
         units.insert(

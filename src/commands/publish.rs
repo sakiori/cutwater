@@ -17,7 +17,7 @@ use super::Repository;
 use super::check::disagreements;
 use crate::adapter::{
     AdapterKind, PublishOutcome, PublishRequest, PublishedRequest, ToolsRequest, UnitRef,
-    VersionQuery,
+    VersionQuery, VersionWrite,
 };
 use crate::assets::{self, Asset};
 use crate::changelog;
@@ -303,6 +303,10 @@ struct Run<'r> {
     /// The units of earlier releases whose registries lack their released
     /// version, or could not say.
     unavailable: BTreeSet<String>,
+    /// The released version of every unit, as the manifest holds it.
+    versions: Vec<VersionWrite>,
+    /// The directory the adapters share across the run's publications.
+    work: Option<tempfile::TempDir>,
     record: Record,
     severity: Option<Severity>,
 }
@@ -342,6 +346,15 @@ impl<'r> Run<'r> {
             owners: Vec::new(),
             dependencies,
             unavailable: BTreeSet::new(),
+            versions: manifest
+                .units
+                .iter()
+                .map(|(unit, entry)| VersionWrite {
+                    unit: unit.clone(),
+                    version: entry.version.to_string(),
+                })
+                .collect(),
+            work: None,
             record: Record {
                 commit: head,
                 dry_run,
@@ -782,6 +795,7 @@ impl<'r> Run<'r> {
         output: &Output,
         member: usize,
     ) -> Result<(UnitState, Option<String>, Option<String>)> {
+        let work = self.work_dir()?;
         let unit = &self.released[member];
         let label = format!("`{}` {}", unit.name, unit.version);
         let adapter = unit.adapter.adapter();
@@ -793,6 +807,8 @@ impl<'r> Run<'r> {
             root: self.repo.git.root().to_path_buf(),
             units: self.unit_refs(unit.adapter),
             package: query.clone(),
+            released: self.versions.clone(),
+            work: work.clone(),
         }) {
             Ok(published) => published,
             Err(err) => {
@@ -824,14 +840,15 @@ impl<'r> Run<'r> {
                 );
             }
         }
-        let root = self.repo.git.root().to_path_buf();
+        let request = PublishedRequest {
+            root: self.repo.git.root().to_path_buf(),
+            units: self.unit_refs(unit.adapter),
+            queries: vec![query.clone()],
+            released: self.versions.clone(),
+            work: Some(work.clone()),
+        };
         let (listed, problem) = wait_listed(clock, self.timeout, || {
-            let answers = adapter
-                .published(&PublishedRequest {
-                    root: root.clone(),
-                    queries: vec![query.clone()],
-                })
-                .map_err(|err| err.to_string())?;
+            let answers = adapter.published(&request).map_err(|err| err.to_string())?;
             let answer = answers.units.into_iter().next().ok_or("no answer")?;
             match answer.problem {
                 Some(problem) => Err(problem),
@@ -990,18 +1007,46 @@ impl<'r> Run<'r> {
         });
     }
 
-    /// Asks each unit's registry whether it holds the unit's version.
+    /// The directory the adapters share across the run, created when
+    /// first needed.
+    fn work_dir(&mut self) -> Result<std::path::PathBuf> {
+        if self.work.is_none() {
+            self.work = Some(
+                tempfile::Builder::new()
+                    .prefix("cutwater-publish-")
+                    .tempdir()
+                    .context("cannot create the run's working directory")?,
+            );
+        }
+        Ok(self
+            .work
+            .as_ref()
+            .expect("the working directory exists")
+            .path()
+            .to_path_buf())
+    }
+
+    /// Asks each unit's registry whether it holds the unit's version; for
+    /// the units whose release commit is HEAD, with the run's directory, in
+    /// which an adapter may build what their publication uploads.
     fn ask_registries(&mut self, members: &[usize]) -> Result<Vec<Answer>> {
         let mut answers: BTreeMap<usize, Answer> = BTreeMap::new();
-        for kind in AdapterKind::ALL {
+        for (kind, own) in AdapterKind::ALL
+            .into_iter()
+            .flat_map(|kind| [(kind, true), (kind, false)])
+        {
             let asked: Vec<usize> = members
                 .iter()
                 .copied()
-                .filter(|&member| self.released[member].adapter == kind)
+                .filter(|&member| {
+                    let unit = &self.released[member];
+                    unit.adapter == kind && (unit.release_commit == self.head) == own
+                })
                 .collect();
             if asked.is_empty() {
                 continue;
             }
+            let work = if own { Some(self.work_dir()?) } else { None };
             let queries = asked
                 .iter()
                 .map(|&member| VersionQuery {
@@ -1011,7 +1056,10 @@ impl<'r> Run<'r> {
                 .collect();
             let publications = kind.adapter().published(&PublishedRequest {
                 root: self.repo.git.root().to_path_buf(),
+                units: self.unit_refs(kind),
                 queries,
+                released: self.versions.clone(),
+                work,
             })?;
             for (member, publication) in asked.into_iter().zip(publications.units) {
                 let answer = match publication.problem {

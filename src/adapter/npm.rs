@@ -12,8 +12,8 @@ use serde_json::Value;
 use super::pnpm::{PNPM_WORKSPACE, PnpmWorkspace, set_catalog_entry};
 use super::walk::{PNPM_MANIFESTS, npm_dirs, pnpm_dirs};
 use super::{
-    AcceptsRequest, Adapter, AdapterError, DiscoverRequest, DiscoveredUnit, Discovery, Edge,
-    EdgeKind, FileWrite, InspectRequest, Inspection, Location, LockfileRequest, Lockfiles,
+    AcceptsRequest, Adapter, AdapterError, Adoption, DiscoverRequest, DiscoveredUnit, Discovery,
+    Edge, EdgeKind, FileWrite, InspectRequest, Inspection, Location, LockfileRequest, Lockfiles,
     PackageProblem, PrepareRequest, Prepared, Publication, Publications, PublishOutcome,
     PublishRequest, Published, PublishedRequest, Tools, ToolsRequest, UnitRef, UnitVersion,
     WriteRequest, Writes, join, nearest_lockfiles, publication, run_tool,
@@ -205,7 +205,11 @@ impl Adapter for Npm {
                 }
             }
         }
-        Ok(Inspection { units, edges })
+        Ok(Inspection {
+            units,
+            edges,
+            problems: Vec::new(),
+        })
     }
 
     fn accepts(&self, request: &AcceptsRequest) -> Result<bool, AdapterError> {
@@ -284,6 +288,10 @@ impl Adapter for Npm {
 
     fn lockfiles(&self, request: &LockfileRequest) -> Result<Lockfiles, AdapterError> {
         Ok(nearest_lockfiles(request, &LOCKFILES))
+    }
+
+    fn adopt(&self, _request: &InspectRequest) -> Result<Adoption, AdapterError> {
+        Ok(Adoption::default())
     }
 
     fn published(&self, request: &PublishedRequest) -> Result<Publications, AdapterError> {
@@ -1319,6 +1327,7 @@ mod tests {
         Npm.inspect(&InspectRequest {
             root: root.to_path_buf(),
             units,
+            released: Vec::new(),
         })
         .unwrap()
     }
@@ -1383,6 +1392,7 @@ mod tests {
             .inspect(&InspectRequest {
                 root: root.to_path_buf(),
                 units,
+                released: Vec::new(),
             })
             .unwrap_err();
         assert_eq!(err.file, "packages/app/package.json");
@@ -1402,6 +1412,7 @@ mod tests {
             .inspect(&InspectRequest {
                 root: root.to_path_buf(),
                 units: vec![unit("tool", ".")],
+                released: Vec::new(),
             })
             .unwrap_err();
         assert!(

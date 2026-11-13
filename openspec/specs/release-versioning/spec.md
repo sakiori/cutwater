@@ -24,7 +24,7 @@ Units whose adapter writes one shared version, such as Cargo crates that inherit
 - **THEN** `status` refuses and names `core`, `api` and `Cargo.toml`
 
 ### Requirement: Releases caused by dependencies
-A unit SHALL take a patch bump when a unit it depends on through a runtime or optional dependency is released at a version outside the range the dependent declares, judged by the ecosystem's own range rules. Cargo build dependencies SHALL count as runtime dependencies. Development dependencies SHALL not cause a release. The changelog entry of such a release SHALL name the dependencies and their new versions.
+A unit SHALL take a patch bump when a unit it depends on through a runtime or optional dependency, or whose version it manages for its consumers as a Maven BOM does, is released at a version outside the range the dependent declares, judged by the ecosystem's own range rules. Cargo build dependencies SHALL count as runtime dependencies. Development dependencies SHALL not cause a release. The changelog entry of such a release SHALL name the dependencies and their new versions.
 
 #### Scenario: Range excludes the new major
 - **WHEN** `api` depends on `core` with `^1.2.0` and `core` is released at 2.0.0
@@ -61,7 +61,7 @@ The release graph's edges SHALL be the runtime, Cargo build and optional depende
 - **THEN** `ui` is published before `web`
 
 ### Requirement: Dependencies the ecosystem's tool publishes first
-The release graph SHALL also hold every dependency between units that the ecosystem's tool needs in the registry before it publishes the dependent: for Cargo, each dependency that names a version, development dependencies included. Such an edge SHALL count between members of the same fixed group too, because the tool publishes them one at a time.
+The release graph SHALL also hold every dependency between units that the ecosystem's tool needs in the registry before it publishes the dependent: for Cargo, each dependency that names a version, development dependencies included; for Maven, every reference the release build resolves, test dependencies included, but no version that `dependencyManagement` only manages. Such an edge SHALL count between members of the same fixed group too, as the tool publishes them one at a time.
 
 #### Scenario: Cargo development dependency with a version
 - **WHEN** the crate `core` declares `testkit` as a development dependency with a version, and `testkit` depends on `core` at runtime, in different groups
@@ -70,6 +70,10 @@ The release graph SHALL also hold every dependency between units that the ecosys
 #### Scenario: Such a cycle inside a fixed group
 - **WHEN** the crates `core` and `testkit` form a fixed group, `core` declares `testkit` as a development dependency with a version, and `testkit` depends on `core` at runtime with a version
 - **THEN** `status`, `version` and `mr` refuse and list both edges, and do not suggest a fixed group
+
+#### Scenario: Maven test dependency
+- **WHEN** the Maven unit `orders` depends on `ledger` with the `test` scope
+- **THEN** `ledger` is published before `orders`, whose release build resolves it
 
 ### Requirement: Version manifest
 The tool SHALL keep `.cutwater/versions.toml` with the released version of every unit. Only `init` and `version` SHALL write it, and `check` SHALL fail a merge request other than the release merge request that changes an existing manifest. Where an adapter's files also hold the released version, `check` SHALL fail when the two disagree, naming the unit and both versions.
@@ -90,11 +94,15 @@ The tool SHALL keep `.cutwater/versions.toml` with the released version of every
 - **THEN** `check` fails and lists the edges `api → core` and `core → api`
 
 ### Requirement: New and removed units
-A unit without a manifest entry SHALL be new and SHALL be released only once a changeset names it with a bump other than `none`. Its first release SHALL be the version its adapter's files declare, and the changesets naming it SHALL only provide its changelog entry.
+A unit without a manifest entry SHALL be new and SHALL be released only once a changeset names it with a bump other than `none`. Its first release SHALL be the version its adapter's files declare, for Maven the `revision` without `-SNAPSHOT`, and the changesets naming it SHALL only provide its changelog entry.
 
 #### Scenario: First release of a new package
 - **WHEN** a merge request adds the npm package `export` at version 0.1.0 with a changeset, and the release merge request lands
 - **THEN** the manifest holds `export` 0.1.0 and `publish` releases it at 0.1.0
+
+#### Scenario: First release of a new Maven unit
+- **WHEN** a merge request adds the Maven unit `billing` with `revision` `0.1.0-SNAPSHOT` and a changeset naming it, and the release merge request lands
+- **THEN** the manifest holds `billing` 0.1.0 and `publish` deploys it at 0.1.0
 
 ### Requirement: Removed units
 `version` SHALL remove the manifest entry of a unit that no longer exists when it applies a release. A removal alone SHALL not make a release. Renaming is a removal and an addition, and existing tags stay.
