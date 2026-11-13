@@ -1,6 +1,6 @@
 {
   "name": "@sakiori/cutwater-bin-darwin-arm64",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "The cutwater executable for macOS on arm64, which the npm package cutwater runs",
   "license": "MIT",
   "repository": {
